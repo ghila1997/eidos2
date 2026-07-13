@@ -32,7 +32,7 @@ sottile ma vero end-to-end, si ispessisce un pezzo alla volta (dettagli in ROADM
 
 | Modulo | Responsabilità | Stato | Docs |
 |---|---|---|---|
-| Fondamenta | Autentica utente/tenant, ruoli e permessi via Grant, audit log | pianificato | — |
+| Fondamenta | Autentica il founder (single-user) su Supabase, schema con `tenant_id` da subito. Ruoli/permessi granulari (Grant), audit log, dispositivi: Tappa 8 | costruito (v1 minima) | [docs/fondamenta/README.md](docs/fondamenta/README.md) |
 | Orchestratore | Capisce l'intento, decide azione diretta vs delega a subagente, coordina gli altri moduli | pianificato | — |
 | Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime), tabelle strutturate interrogate su richiesta (fatti su clienti/progetti, anche estratti da documenti), ricerca semantica (pgvector) su email/documenti. Include l'archiviazione dei documenti originali (storage file) e un filtro/classificatore di mail prima dell'ingestione (componente riusabile anche per classificare la posta in generale) | pianificato | — |
 | Connettori Cloud | Email/calendario/storage/messaggistica/ricerca web, OAuth per singola capacità | pianificato | — |

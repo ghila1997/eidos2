@@ -4,7 +4,7 @@
 > sottile ma vero, poi si ispessisce. Ogni modulo si approfondisce in sessione dedicata
 > ("approfondiamo il modulo X").
 
-## Tappa 1 — Fondamenta (versione minima, single-user)
+## Tappa 1 — Fondamenta (versione minima, single-user) — ✅ fatto (2026-07-13)
 
 - Scheletro repo, deploy in produzione di un "hello world", CI minima
 - Autenticazione del founder come singolo utente su Supabase; `tenant_id` presente nello
@@ -12,6 +12,7 @@
 - **Sblocca**: tutto il resto. **Non serve ancora**: ruoli multipli, dispositivi/pairing,
   inviti team, billing
 - **Finito quando**: il founder si autentica e un commit su main arriva in produzione da solo
+- Dettagli: [docs/fondamenta/README.md](docs/fondamenta/README.md)
 
 ## Tappa 2 — Orchestratore minimo + Memoria (prima istanza)
 

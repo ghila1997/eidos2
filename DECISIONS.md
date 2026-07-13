@@ -136,3 +136,28 @@ della roadmap include già lo schema per fatti strutturati anche se resta perlop
 non arriva la Tappa 5 (documenti); l'estrazione strutturata dai documenti richiede una
 pipeline aggiuntiva (parsing/estrazione per tipo di documento) da progettare quando si
 costruisce quella tappa.
+
+---
+
+## 2026-07-13 — Fondamenta: nuovo progetto Supabase pulito invece di riusare "EIDOS"
+
+**Contesto**: costruendo Tappa 1 (Fondamenta), il progetto Supabase già collegato al progetto
+("EIDOS", ref `nnnbtbmiaqkgylllwufw`, creato 2026-07-07) risultava avere 11 migration remote
+già applicate — schema di Eidos v1 ancora presente nel database reale, nonostante il reboot
+completo deciso lo stesso giorno riguardasse esplicitamente anche l'infrastruttura, non solo
+il codice locale.
+
+**Decisione**: creato un nuovo progetto Supabase pulito ("eidos2", ref
+`ivuywauiqywlmxjxdppk`, regione eu-west-2) via Supabase CLI, schema applicato da zero
+(migration `20260713153000_fondamenta_tenants.sql`: `tenants` + `tenant_members`). Il vecchio
+progetto "EIDOS" resta intatto e non collegato — da archiviare/cancellare separatamente,
+decisione lasciata all'utente. `.env` e `.mcp.json` aggiornati al nuovo progetto.
+
+**Alternative considerate**: ripulire lo schema v1 sul progetto esistente (DROP + riapplica) —
+scartata dall'utente, preferito isolamento netto senza rischio di residui; lasciare lo schema
+v1 intatto e accodare Fondamenta sopra — scartata, avrebbe lasciato tabelle orfane nello stesso
+DB e vanificato lo scopo del reboot "sul pulito".
+
+**Conseguenze**: due progetti Supabase esistono nello stesso account nel breve periodo (quello
+vecchio va gestito a parte, fuori da questo ciclo di costruzione); nessun dato/tabella di
+Eidos v1 nel database che il prodotto usa davvero da qui in avanti.
