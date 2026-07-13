@@ -30,6 +30,8 @@
   (es. template di risposta, processi ricorrenti) — diverso dai Subagent (`AgentDefinition`),
   che restano per delega parallela con tool-set separato. Da verificare di nuovo su
   documentazione live quando si costruisce il modulo (la regola di CLAUDE.md vale comunque).
+  **Requisito di lancio**: abilitazione in Tappa 2, contenuto reale (almeno una skill vera,
+  non vuota) richiesto entro la checklist di lancio, Tappa 11 di ROADMAP.md.
 
 ## Agente Locale
 - Isolamento della sessione SDK dalla macchina ospite (il meccanismo concreto va verificato

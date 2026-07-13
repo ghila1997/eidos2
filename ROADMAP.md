@@ -30,6 +30,9 @@
 - `draft_email` + `send_email` con conferma esplicita y/n nel loop CLI (gate nel codice, non
   nel modello)
 - Interfaccia: CLI testuale
+- **Skills del Claude Agent SDK** (vedi `notes/idee-salvate-da-eidos-v1.md`, sezione
+  Orchestratore): abilitare `setting_sources` e predisporre `.claude/skills/` da subito, anche
+  se all'inizio con una sola skill di prova — più facile abilitarlo ora che aggiungerlo dopo
 - **Sblocca**: il primo vero "aha moment" (cercare nei propri dati e agire davvero)
 - **Finito quando**: il founder usa l'assistente da CLI per cercare qualcosa nelle mail reali
   e farsi inviare un'email vera, con conferma esplicita prima dell'invio
@@ -91,12 +94,30 @@
 - **Finito quando**: un cliente paga l'abbonamento, lo stato si riflette nell'app, e il prezzo
   scelto è coperto dal costo stimato per tenant
 
-## Tappa 10 — Prima del primo cliente esterno reale (checklist di lancio)
+## Tappa 10 — Automazioni
 
-Quattro cose che un prodotto "quasi finito" dimentica facilmente perché nessun modulo le
+- Il Claude Agent SDK non offre nulla di nativo per schedulazione o trigger su eventi (verificato
+  sulla doc ufficiale 2026-07-13: Sessions serve a riprendere una conversazione, Hooks intercetta
+  tool call dentro una sessione già in corso — nessuno dei due "risveglia" l'agente da solo).
+  Serve infrastruttura dedicata: scheduler (es. APScheduler) per esecuzioni a orario fisso,
+  webhook/poller per trigger su eventi (riusa le connessioni già attive dei Connettori Cloud,
+  es. nuova mail), storage delle definizioni automazione per tenant (Supabase)
+- Esecuzione: ogni automazione, quando scatta, invoca l'Orchestratore con un prompt costruito
+  dalla definizione salvata — stesso gate di conferma sulle azioni distruttive già in vigore
+  per il resto del prodotto, nessuna eccezione perché l'azione parte da un trigger automatico
+- **Finito quando**: un cliente reale crea un'automazione (es. "ogni lunedì mattina riepilogo
+  email non lette") che si esegue da sola, rispettando i gate di conferma esistenti
+
+## Tappa 11 — Prima del primo cliente esterno reale (checklist di lancio)
+
+Cinque cose che un prodotto "quasi finito" dimentica facilmente perché nessun modulo le
 possiede da solo — vanno verificate esplicitamente prima di aprire a un cliente pagante
 non-founder, non date per scontate:
 
+- **Skills pronte all'uso**: almeno un set di skill reali (procedure/playbook aziendali,
+  template di risposta) scritte e testate in `.claude/skills/`, non solo la capacità abilitata
+  a vuoto dalla Tappa 2 — un cliente nuovo deve trovare qualcosa di già utile, non una funzione
+  tecnica senza contenuto
 - **Privacy/GDPR**: diritto alla cancellazione dati di un cliente reale — verificare che
   cancellare un fatto/documento lo tolga davvero ovunque, **audit log incluso** (nel progetto
   precedente `forget()` non toccava l'audit log, dove il contenuto restava in chiaro)
@@ -113,7 +134,7 @@ più "dimenticate silenziosamente"
 
 | Ordine | Modulo | Perché ora | Finito quando |
 |---|---|---|---|
-| 11 | Primo cliente esterno reale | Scheletro end-to-end + billing + checklist di lancio (Tappa 10) coperti | Un cliente pagante non-founder usa il prodotto in autonomia |
+| 12 | Primo cliente esterno reale | Scheletro end-to-end + billing + Automazioni + checklist di lancio (Tappa 11) coperti | Un cliente pagante non-founder usa il prodotto in autonomia |
 
 ## Esplicitamente rimandato
 

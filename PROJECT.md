@@ -40,6 +40,7 @@ sottile ma vero end-to-end, si ispessisce un pezzo alla volta (dettagli in ROADM
 | Voce | STT/TTS (da riprogettare da zero, nessuna decisione ereditata) | pianificato | — |
 | Interfaccia Utente | Riceve voce/testo, mostra risposte, log azioni, conferme | pianificato | — |
 | Consumi | Traccia uso per tenant, applica soglia/avvisi del piano in abbonamento | pianificato | — |
+| Automazioni | Automazioni create dall'utente (schedulate o su trigger di eventi): scheduler, ricezione webhook/polling sui Connettori Cloud, storage delle definizioni per tenant, esecuzione tramite invocazione dell'Orchestratore | pianificato | — |
 
 I README di modulo (`docs/{{modulo}}/README.md`) si scrivono quando il modulo viene costruito.
 
