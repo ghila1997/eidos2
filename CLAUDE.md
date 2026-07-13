@@ -79,6 +79,12 @@ Ogni modulo si costruisce con la skill `saas-module-builder` seguendo questo
 ciclo, in una sessione dedicata. **I due stop dell'utente sono obbligatori e non si saltano
 mai:**
 
+0. **Controllo arretrati** — prima di aprire il design di una tappa/modulo nuovo, rileggere in
+   ROADMAP.md i "Finito quando" delle tappe precedenti e la sezione "Esplicitamente
+   rimandato". Se qualcosa risulta incompleto e **non** è già annotato lì come rimandato,
+   va segnalato esplicitamente all'utente prima di procedere — non si salta in silenzio.
+   Non si applica alle scelte tecniche rimandate "solo se serve" (es. subagent paralleli): quelle
+   restano non fatte finché non emerge un bisogno reale, e non sono un arretrato.
 1. Design dettagliato del modulo **in chat** (interfacce, entità, decisioni,
    trappole da testare) — nessun file viene scritto in questa fase
 2. 🛑 **STOP 1 — l'utente valida il design in chat.** Solo dopo l'ok esplicito
