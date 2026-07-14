@@ -110,8 +110,7 @@ async def conferma_azione(
 
     payload = azione["payload"]
     try:
-        access_token = await gmail_client.ottieni_access_token(tenant_id)
-        await _ESECUTORI[azione["tipo"]](access_token, payload)
+        await _ESECUTORI[azione["tipo"]](tenant_id, payload)
     except Exception:
         await _aggiorna_stato(azione_id, STATO_ERRORE)
         raise
@@ -119,7 +118,8 @@ async def conferma_azione(
     return {"stato": STATO_INVIATA}
 
 
-async def _esegui_send_email(access_token: str, payload: dict[str, Any]) -> None:
+async def _esegui_send_email(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     await gmail_client.invia_messaggio(
         access_token,
         payload["destinatario"],
@@ -130,7 +130,8 @@ async def _esegui_send_email(access_token: str, payload: dict[str, Any]) -> None
     )
 
 
-async def _esegui_reply_email(access_token: str, payload: dict[str, Any]) -> None:
+async def _esegui_reply_email(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     await gmail_client.rispondi_messaggio(
         access_token,
         payload["message_id"],
@@ -141,7 +142,8 @@ async def _esegui_reply_email(access_token: str, payload: dict[str, Any]) -> Non
     )
 
 
-async def _esegui_forward_email(access_token: str, payload: dict[str, Any]) -> None:
+async def _esegui_forward_email(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     await gmail_client.inoltra_messaggio(
         access_token,
         payload["message_id"],
@@ -152,11 +154,13 @@ async def _esegui_forward_email(access_token: str, payload: dict[str, Any]) -> N
     )
 
 
-async def _esegui_send_draft(access_token: str, payload: dict[str, Any]) -> None:
+async def _esegui_send_draft(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     await gmail_client.invia_bozza(access_token, payload["draft_id"])
 
 
-async def _esegui_trash_email(access_token: str, payload: dict[str, Any]) -> None:
+async def _esegui_trash_email(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     await gmail_client.cestina_messaggio(access_token, payload["message_id"])
 
 

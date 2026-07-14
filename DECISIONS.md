@@ -346,3 +346,148 @@ contenuto; ogni prossimo connettore (Calendar/Storage, Tappa 4) parte da questo 
 quando emergerà un'altra categoria di lavoro ricorrente (es. subagent, automazioni) si
 estrarrà un playbook analogo dopo la prima implementazione reale di quella categoria, non
 prima.
+
+---
+
+## 2026-07-14 — Ambienti: supera la voce precedente — niente secondo Supabase prima di Tappa 8
+
+**Contesto**: la voce precedente ("Ambienti: nessuno staging per ora, un solo Supabase fino a
+Tappa 3") imponeva l'apertura di un secondo progetto Supabase dedicato a sviluppo/test prima di
+iniziare Tappa 3, per proteggere i dati reali del founder in uso permanente. Alla vigilia di
+Tappa 3 sono emersi due fatti che ne cambiano la premessa: (1) vincolo di piano — l'utente ha
+già 2 progetti Supabase sul piano gratuito (il vecchio "EIDOS" v1, ref
+`nnnbtbmiaqkgylllwufw`, mai cancellato nonostante fosse già segnato "da archiviare" il
+2026-07-13, e "eidos2", ref `ivuywauiqywlmxjxdppk`, quello attivo) e non può aprirne un terzo
+gratis prima di avere ricavi; (2) natura dei dati — l'utente ha chiarito che considera i dati
+attuali in `eidos2` (mail importate, memoria) materiale di costruzione/test, non uso
+quotidiano reale da proteggere: prevede di creare un account pulito quando lancerà davvero il
+prodotto. Questo toglie la base alla premessa originale ("proteggere l'unico uso reale del
+founder").
+
+**Decisione**: si resta su un solo progetto Supabase (`eidos2`) anche per Tappa 3 e oltre,
+finché non si verifica una di queste due condizioni: il founder inizia a usare `eidos2` come
+assistente reale quotidiano (non più solo materiale di test), oppure si arriva a Tappa 8
+(primo cliente reale, dove comunque serve infrastruttura multi-tenant più solida). Mitigazione
+a costo zero per le sessioni di test più rischiose (Tappa 3: azioni su file/cartelle reali che
+possono scrivere fatti/audit log): backup manuale (`pg_dump`) di `eidos2` prima della sessione,
+invece di un ambiente separato permanente.
+
+**Alternative considerate**: cancellare il vecchio progetto "EIDOS" v1 per liberare uno slot
+gratuito e aprire comunque un secondo Supabase dedicato a dev/test — scartata per ora: avrebbe
+comunque prodotto un ambiente "dev" trattato come test, la stessa natura dei dati attuali in
+`eidos2`, quindi 15 minuti spesi senza un rischio reale da mitigare. Restare per sempre su un
+solo Supabase anche dopo Tappa 8 — scartata, il rischio cambia natura quando entrano dati di
+clienti reali non-founder.
+
+**Conseguenze**: ROADMAP.md, prerequisito di Tappa 3, aggiornato per rimuovere l'apertura del
+secondo Supabase come blocco. Il vecchio progetto "EIDOS" v1 resta comunque candidato a
+cancellazione a costo zero (libera uno slot per quando servirà, es. se l'uso di `eidos2`
+diventa reale prima di Tappa 8), ma non è più legato a nessuna tappa: azione facoltativa
+dell'utente, non un prerequisito di roadmap.
+
+---
+
+## 2026-07-14 — Autorizzazioni: niente modulo "Autorizzazioni" separato, resta dentro Orchestratore
+
+**Contesto**: preparando il design di Tappa 3 (Agente Locale), è emerso che il filesystem
+locale — a differenza dei connettori cloud (Gmail oggi, Calendar/Storage in Tappa 4), dove
+l'autorizzazione alla lettura è già data una volta per tutte dal consenso OAuth — non ha un
+provider esterno che faccia da guardiano: senza un perimetro esplicito, un agente locale
+vedrebbe di default tutto ciò che vede l'utente del PC, non solo cartelle di lavoro. Si è
+valutato se questo giustificasse un nuovo modulo di piattaforma dedicato ("Autorizzazioni":
+credenziali esterne, gate di conferma azioni distruttive, perimetri di accesso locali).
+
+**Decisione**: nessun nuovo modulo/cartella. Il meccanismo di gate delle azioni distruttive
+(`codice/orchestratore/azioni.py`, dispatch generico per `tipo`, già usato da Gmail) e la
+storage delle credenziali (`codice/orchestratore/oauth.py`, già generica per `tenant_id`+
+`provider`) restano dentro Orchestratore, che per CLAUDE.md ("un solo motore agentico") è già
+per design il substrato condiviso a cui ogni capacità si aggancia come tool — non un modulo di
+dominio come un altro da cui l'Agente Locale dovrebbe tenersi separato. L'Agente Locale (Tappa
+3) consuma questi meccanismi via import, aggiungendo solo ciò che è realmente nuovo: il
+perimetro di cartelle/path autorizzato (vedi ROADMAP.md, Tappa 3). Esplicitamente escluso da
+questo perimetro concettuale: i ruoli/permessi tra membri dello stesso tenant (owner/
+operatore/lettore, Tappa 8) — asse diverso (chi tra gli umani del tenant può fare cosa, non
+cosa può toccare l'agente nel mondo esterno), non va confuso nello stesso modulo.
+
+**Alternative considerate**: modulo "Autorizzazioni" separato in `codice/` con propria riga in
+PROJECT.md — scartata: Python non impone lo spostamento (l'import cross-modulo funziona
+identico), e i 2 meccanismi esistenti sono già generici dove serve; l'unico problema reale
+individuato (costanti Gmail-specifiche mescolate con la parte generica di credential storage in
+`oauth.py`) non causa ancora danno con un solo provider — rimandato a Tappa 4, quando arriva il
+secondo provider OAuth (vedi ROADMAP.md). Spostare comunque il codice ora "per pulizia" —
+scartata, avrebbe toccato senza necessità funzionale codice di Tappa 2 già validato con dati
+Gmail reali (STOP 2 già passato).
+
+**Conseguenze**: ROADMAP.md aggiornato — Tappa 3 include il requisito esplicito di perimetro
+filesystem imposto nel codice; Tappa 4 include il refactor di `oauth.py` (split generico/
+Gmail-specifico) come lavoro da fare quando arriva il secondo provider, non prima; Tappa 11
+include ora il caso specifico dell'eval su istruzione ostile in un'email letta dall'agente
+(identificato in questa stessa discussione, non ancora coperto), rimandato lì su richiesta
+esplicita dell'utente invece che anticipato a prima di Tappa 4.
+
+---
+
+## 2026-07-14 — Safety Supervisor: punto unico di autorizzazione per ogni tool call
+
+**Contesto**: progettando Tappa 3 (Agente Locale), il primo tentativo teneva tre meccaniche di
+enforcement diverse in parallelo — controllo Python scritto a mano dentro ogni tool custom (come
+già fa Gmail), un hook `PreToolUse` per i tool nativi dell'SDK filesystem, e l'idea di negare
+sempre i tool nativi per poi rifare l'azione a mano. L'utente ha fatto notare il rischio concreto:
+ogni nuovo connettore/capacità avrebbe rischiato di reinventare a modo suo sia il controllo di
+autorizzazione sia il gate di conferma, con logica sempre più sparsa e incoerente man mano che il
+prodotto cresce (Calendar/Storage in Tappa 4, Automazioni in Tappa 10). L'utente ha anche chiesto
+esplicitamente di poter usare i tool nativi dell'SDK (`Read`/`Write`/`Edit`/`Glob`/`Grep`) per
+sfruttarne la potenza reale (es. `Grep` cerca nel contenuto dei file, non solo nei nomi) invece di
+riscrivere equivalenti custom più poveri.
+
+**Decisione**: introdotto un **Safety Supervisor** (`codice/orchestratore/safety/supervisor.py`,
+`policies.yaml`) come punto unico di decisione per ogni tool call, nativo o custom: riceve
+un'azione (nome, una o più categorie di rischio: `destructive`/`privacy`/`costly`/`network`/
+`read_only`) e un contesto (incluso sempre `tenant_id`), valuta una lista di regole dichiarative
+ordinate per priorità con condizioni (es. `path_in_perimetro: true`), e restituisce
+`allow`/`deny`/`ask_user` più un audit log JSONL immutabile. Non esegue nulla e non parla con
+l'utente: è puro motore di policy, stateless. Due punti di aggancio, stesso Supervisor:
+
+- **Tool nativi SDK** (Agente Locale: `Read`/`Write`/`Edit`/`Glob`/`Grep`, sessione locale
+  interattiva): un hook `PreToolUse` unico calcola il contesto (es. perimetro cartelle) e chiama
+  `Supervisor.validate()`. Essendo la sessione locale e sincrona, un verdetto `ask_user` viene
+  risolto dall'hook stesso chiedendo conferma al terminale, fuori dal controllo del modello.
+- **Tool custom MCP**: la funzione tool chiama `Supervisor.validate()` in testa. Per Gmail
+  (sessione server-side, richiesta HTTP la cui conferma può arrivare più tardi da un altro
+  dispositivo), un verdetto `ask_user` crea un'azione pendente con il meccanismo esistente
+  (`azioni.py`, invariato) — comportamento identico a oggi, ma la regola "quali azioni chiedono
+  conferma" ora vive nel file di policy, non in if/else nel codice del connettore. Per
+  `move_file`/`delete_file`/`create_folder` (Agente Locale, sessione locale sincrona, senza
+  equivalente nativo SDK), un verdetto `ask_user` si risolve subito con lo stesso prompt
+  sincrono al terminale usato dall'hook per i tool nativi (funzione di conferma condivisa) —
+  nessuna azione pendente su Supabase, non necessaria per un processo locale a singolo utente;
+  l'audit resta comunque coperto dal log del Supervisor stesso.
+
+**Cosa NON si costruisce ora (rimandato)**: nessun consenso persistente per categoria (il
+Supervisor chiede sempre, non memorizza "ok per sempre" — idea salvata in
+`notes/idee-prodotto-eidos2.md` con vincolo esplicito: categorie come pagamenti/bancarie non
+devono MAI ammettere consenso persistente, anche quando/se costruito); nessuna modalità di
+controllo selezionabile dal cliente stile Claude Code (`bypassPermissions` e simili) — sconsigliata
+esplicitamente per il pubblico PMI/freelance non tecnico di Eidos, vedi stessa nota.
+
+**Alternative considerate**: mantenere il controllo scritto a mano dentro ogni tool (lo status quo
+di Gmail) e ripeterlo per Agente Locale — scartata, è la causa diretta del problema segnalato
+dall'utente; usare solo tool custom anche per il filesystem, evitando del tutto i tool nativi
+dell'SDK — scartata su richiesta esplicita dell'utente, rinuncerebbe a capacità reali (es. `Grep`)
+senza necessità, ora che l'enforcement non vive più dentro il tool ma nel Supervisor.
+
+**Rischio tecnico aperto, da verificare scrivendo il codice** (non blocca l'architettura): se un
+hook `PreToolUse` (o una funzione tool custom) può davvero bloccare in modo sincrono in attesa di
+input da terminale dentro il loop dell'agente, senza un timeout imposto dall'SDK che lo interrompa
+prima che il founder finisca di rispondere. Se non funziona in pratica, fallback: la conferma
+locale passa comunque dalla stessa coda `azioni_pending` usata da Gmail invece che da un prompt
+sincrono — cambia solo il "backend" che raccoglie il sì/no, non il Supervisor né le policy.
+
+**Conseguenze**: questa voce supera parzialmente "Autorizzazioni: niente modulo Autorizzazioni
+separato" (14/7) sul dettaglio dell'enforcement (ora centralizzato nel Supervisor invece che
+duplicato per tool), ma ne conferma il principio di fondo (resta dentro Orchestratore, nessun
+modulo di dominio a sé, nessuna riga propria in PROJECT.md). Gmail (Tappa 2, già validato) non
+cambia comportamento visibile, ma le sue funzioni tool andranno aggiornate per chiamare il
+Supervisor invece di if/else propri — piccola modifica meccanica, da fare come parte della
+costruzione di Tappa 3. Il design dettagliato del Safety Supervisor e di Agente Locale prosegue
+in `saas-module-builder`.

@@ -175,4 +175,10 @@ costruzione.
 - Ordine di sviluppo dentro ogni modulo che tocca interazione: testo prima, voce dopo.
 - Azioni distruttive (invio email, cancellazioni, spesa) richiedono un gate esplicito nel
   codice (non solo un'istruzione nel system prompt): l'utente conferma fuori dal controllo
-  del modello prima che l'azione reale avvenga.
+  del modello prima che l'azione reale avvenga. Il gate passa sempre dal **Safety Supervisor**
+  (`codice/orchestratore/safety/`, vedi DECISIONS.md "Safety Supervisor: punto unico di
+  autorizzazione per ogni tool call") — un punto di decisione unico (`allow`/`deny`/`ask_user`)
+  su policy dichiarative (YAML), mai un controllo scritto a mano dentro il singolo
+  connettore/tool. Vale per i tool nativi dell'SDK (hook `PreToolUse`) e per i tool custom MCP
+  (la funzione tool chiama il Supervisor in testa) allo stesso modo — nessuna eccezione per
+  capacità che "sembrano a basso rischio", e nessun controllo di permessi scritto fuori da lì.

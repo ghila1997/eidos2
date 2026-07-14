@@ -18,3 +18,6 @@ venv/
 cookies.txt
 conferma_body.json
 login_body.json
+
+# Audit log del Safety Supervisor (runtime, non sorgente)
+codice/orchestratore/safety/audit.log

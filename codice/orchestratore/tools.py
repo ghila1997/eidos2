@@ -10,13 +10,16 @@ inoltrare, segnare letta/archiviare/importante, organizzare in etichette,
 leggere allegati, cestinare, inviare una bozza esistente - non solo
 cerca/bozza/invia.
 
-Azioni che spediscono davvero qualcosa (send/reply/forward/send_draft) o che
-cestinano NON eseguono subito: creano un'azione in attesa (vedi azioni.py) e
-si fermano. Solo l'endpoint /azioni/{id}/conferma, chiamato direttamente
-dall'utente e mai dal modello, esegue l'azione vera - il modello non può
-bypassare la conferma nemmeno se il contenuto letto (una mail) prova a
-istruirlo a farlo comunque. Segnare letta/archiviare/etichettare sono
-reversibili e a basso rischio: eseguono subito, nessun gate.
+Ogni funzione chiama prima il Safety Supervisor (`safety/supervisor.py`, vedi
+DECISIONS.md "Safety Supervisor: punto unico di autorizzazione per ogni tool
+call") invece di decidere da sé se serve conferma. Azioni che spediscono
+davvero qualcosa (send/reply/forward/send_draft) o che cestinano NON
+eseguono subito: creano un'azione in attesa (vedi azioni.py) e si fermano.
+Solo l'endpoint /azioni/{id}/conferma, chiamato direttamente dall'utente e
+mai dal modello, esegue l'azione vera - il modello non può bypassare la
+conferma nemmeno se il contenuto letto (una mail) prova a istruirlo a farlo
+comunque. Segnare letta/archiviare/etichettare sono reversibili e a basso
+rischio: eseguono subito, nessun gate.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from memoria import db as memoria_db
 
 from . import azioni, embeddings, gmail_client
+from .safety import supervisor
 
 SERVER_NAME = "eidos_orchestratore"
 
@@ -33,9 +37,27 @@ def _testo(contenuto: str) -> dict:
     return {"content": [{"type": "text", "text": contenuto}]}
 
 
+async def _autorizza(tenant_id: str, nome_tool: str, categoria: str, **contesto_extra) -> dict | None:
+    """Chiama il Safety Supervisor prima di agire (vedi DECISIONS.md, "Safety
+    Supervisor: punto unico di autorizzazione per ogni tool call"). Ritorna
+    None se l'azione e' permessa, altrimenti il verdetto da comunicare
+    all'utente al posto di eseguire l'azione."""
+    verdetto = supervisor.validate(
+        {"name": nome_tool, "category": categoria},
+        {"tenant_id": tenant_id, **contesto_extra},
+    )
+    if categoria == supervisor.CATEGORIA_IMMEDIATA and verdetto["verdict"] == supervisor.VERDICT_ALLOW:
+        return None
+    if categoria == supervisor.CATEGORIA_DISTRUTTIVA and verdetto["verdict"] == supervisor.VERDICT_ASK_USER:
+        return None
+    return verdetto
+
+
 # --- Non distruttive: eseguono subito -----------------------------------
 
 async def _search_emails(tenant_id: str, query: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "search_emails", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     embedding = await embeddings.embed_query(query)
     risultati = await memoria_db.match_chunks(tenant_id, embedding, match_count=5)
     if not risultati:
@@ -52,6 +74,8 @@ async def _draft_email(
     tenant_id: str, destinatario: str, oggetto: str, corpo: str,
     cc: str | None = None, bcc: str | None = None,
 ) -> str:
+    if rifiuto := await _autorizza(tenant_id, "draft_email", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     bozza = await gmail_client.crea_bozza(access_token, destinatario, oggetto, corpo, cc=cc, bcc=bcc)
     return f"Bozza creata (id {bozza['id']}), non ancora inviata."
@@ -61,6 +85,8 @@ async def _mark_email(
     tenant_id: str, message_id: str,
     letta: bool | None = None, archiviata: bool | None = None, importante: bool | None = None,
 ) -> str:
+    if rifiuto := await _autorizza(tenant_id, "mark_email", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     azioni_fatte = []
     if letta is True:
@@ -87,6 +113,8 @@ async def _mark_email(
 
 
 async def _organize_email(tenant_id: str, message_id: str, etichetta: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "organize_email", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     etichetta_id = await gmail_client.trova_o_crea_etichetta(access_token, etichetta)
     await gmail_client.modifica_messaggio(access_token, message_id, aggiungi_label=[etichetta_id])
@@ -94,6 +122,8 @@ async def _organize_email(tenant_id: str, message_id: str, etichetta: str) -> st
 
 
 async def _list_labels(tenant_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "list_labels", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     etichette = await gmail_client.lista_etichette(access_token)
     nomi = [e["name"] for e in etichette]
@@ -101,6 +131,8 @@ async def _list_labels(tenant_id: str) -> str:
 
 
 async def _get_attachment(tenant_id: str, message_id: str, attachment_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "get_attachment", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     messaggio = await gmail_client.ottieni_messaggio(access_token, message_id)
     meta = next((a for a in messaggio["allegati"] if a["attachment_id"] == attachment_id), None)
@@ -123,6 +155,8 @@ async def _send_email(
     tenant_id: str, destinatario: str, oggetto: str, corpo: str,
     cc: str | None = None, bcc: str | None = None,
 ) -> str:
+    if rifiuto := await _autorizza(tenant_id, "send_email", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_SEND_EMAIL,
         {"destinatario": destinatario, "oggetto": oggetto, "corpo": corpo, "cc": cc, "bcc": bcc},
@@ -137,6 +171,8 @@ async def _reply_email(
     tenant_id: str, message_id: str, corpo: str,
     destinatario: str | None = None, cc: str | None = None, bcc: str | None = None,
 ) -> str:
+    if rifiuto := await _autorizza(tenant_id, "reply_email", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_REPLY_EMAIL,
         {"message_id": message_id, "corpo": corpo, "destinatario": destinatario, "cc": cc, "bcc": bcc},
@@ -151,6 +187,8 @@ async def _forward_email(
     tenant_id: str, message_id: str, destinatario: str,
     testo_aggiuntivo: str = "", cc: str | None = None, bcc: str | None = None,
 ) -> str:
+    if rifiuto := await _autorizza(tenant_id, "forward_email", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_FORWARD_EMAIL,
         {
@@ -165,6 +203,8 @@ async def _forward_email(
 
 
 async def _send_draft(tenant_id: str, draft_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "send_draft", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_SEND_DRAFT, {"draft_id": draft_id}
     )
@@ -175,6 +215,8 @@ async def _send_draft(tenant_id: str, draft_id: str) -> str:
 
 
 async def _trash_email(tenant_id: str, message_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "trash_email", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_TRASH_EMAIL, {"message_id": message_id}
     )

@@ -5,6 +5,7 @@ python-dotenv==1.0.1
 claude-agent-sdk>=0.2.118
 anthropic
 cryptography
+PyYAML>=6.0
 
 pytest==8.3.3
 pytest-asyncio==0.24.0

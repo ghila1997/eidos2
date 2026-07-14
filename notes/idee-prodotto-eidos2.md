@@ -37,3 +37,34 @@ che ha affossato Eidos v1.
 
 **Prossimo passo quando arriva il momento**: portare la decisione a
 `saas-architect` (è una decisione di mappa/pricing, non un dettaglio di modulo).
+
+## Consenso persistente per categoria e modalità di controllo cliente (Safety Supervisor)
+
+**Emersa**: 2026-07-14, progettando il Safety Supervisor (vedi DECISIONS.md, "Safety Supervisor:
+punto unico di autorizzazione per ogni tool call") durante il design di Tappa 3.
+
+**Idea 1 — consenso persistente per categoria**: invece di chiedere conferma a ogni singola
+azione `ask_user`, il cliente potrebbe autorizzare una categoria una volta ("ok, non chiedermi
+più per l'archiviazione mail") e il Supervisor la ricorda (una specie di `ConsentStore`). Oggi
+il Supervisor chiede sempre, senza memoria.
+
+**Vincolo esplicito da rispettare se/quando si costruisce**: alcune categorie (pagamenti,
+operazioni bancarie, cancellazioni irreversibili) **non devono mai** ammettere consenso
+persistente/bypass, a prescindere da cosa sceglie il cliente — sono le uniche dove "chiedi
+sempre" non è negoziabile. Punto sollevato esplicitamente dall'utente.
+
+**Idea 2 — modalità di controllo selezionabile dal cliente** (stile Claude Code:
+`default`/`acceptEdits`/`plan`/`bypassPermissions`...): proposta dall'utente, valutazione
+richiesta esplicitamente "critica e sincera".
+
+**Valutazione**: **sconsigliata così com'è**. Claude Code è usato da sviluppatori che capiscono
+il rischio di ogni modalità; il pubblico di Eidos è PMI/freelance non tecnici (vedi PROJECT.md).
+Un selettore globale che può disattivare le conferme rischia che un cliente lo scelga per "essere
+meno interrotto" senza capire di aver tolto la rete di sicurezza pensata apposta per evitare danni
+costosi (mail sbagliata, file cancellato) — e in tensione con walking skeleton: si aggiungerebbe
+complessità di scelta prima ancora che un cliente reale abbia usato il gate base. Se in futuro
+serve dare controllo, meglio granulare per categoria con lo stesso vincolo rigido dell'Idea 1
+(alcune categorie mai automatizzabili), non un interruttore generale.
+
+**Da NON fare ora**: nessuna delle due, restano idee da rivalutare quando (e se) emerge un
+bisogno reale da clienti veri, non ipotizzato in anticipo.

@@ -1,6 +1,16 @@
 import pytest
 from cryptography.fernet import Fernet
 
+from orchestratore.safety import supervisor
+
+
+@pytest.fixture(autouse=True)
+def _isola_audit_log_safety(tmp_path, monkeypatch):
+    """Nessun test (anche quelli che non conoscono il Supervisor, come
+    test_tools.py/test_azioni.py che ora ci passano attraverso) deve poter
+    scrivere nell'audit log reale del repo."""
+    monkeypatch.setattr(supervisor, "_AUDIT_LOG_PATH", tmp_path / "safety_audit.log")
+
 
 @pytest.fixture(autouse=True)
 def fake_supabase_env(monkeypatch):
