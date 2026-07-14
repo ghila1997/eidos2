@@ -38,8 +38,10 @@ async def login(body: LoginRequest, response: Response):
     return {"status": "ok"}
 
 
-@router.get("/me")
-async def me(request: Request):
+async def get_sessione_corrente(request: Request) -> dict:
+    """Identità + tenant dell'utente loggato, dal cookie di sessione.
+    Riusata anche da altri moduli (es. orchestratore/router.py) per non
+    duplicare la verifica auth - stessa logica di /me, un punto solo."""
     access_token = request.cookies.get(ACCESS_COOKIE)
     if not access_token:
         raise HTTPException(status_code=401, detail="sessione mancante")
@@ -59,3 +61,8 @@ async def me(request: Request):
         "tenant_id": membership["tenant_id"],
         "role": membership["role"],
     }
+
+
+@router.get("/me")
+async def me(request: Request):
+    return await get_sessione_corrente(request)
