@@ -13,3 +13,8 @@ venv/
 
 # Supabase CLI local state
 .supabase/
+
+# Cookie/token di sessione usati nei test manuali da terminale (mai da committare)
+cookies.txt
+conferma_body.json
+login_body.json

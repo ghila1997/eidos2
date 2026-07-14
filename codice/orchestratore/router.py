@@ -5,7 +5,7 @@ decisione "Orchestratore server-side").
 """
 from __future__ import annotations
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import ClaudeAgentOptions, ProcessError, ResultMessage, query
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -64,22 +64,37 @@ async def chat(body: ChatRequest, request: Request):
     session_id = await memoria_db.get_sessione_agent(tenant_id)
     server = tools.crea_server(tenant_id)
 
-    options = ClaudeAgentOptions(
-        model=MODEL,
-        system_prompt=_costruisci_system_prompt(preferenze),
-        mcp_servers={tools.SERVER_NAME: server},
-        allowed_tools=tools.ALLOWED_TOOLS,
-        setting_sources=["user", "project"],
-        resume=session_id,
-    )
+    def _opzioni(resume: str | None) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            model=MODEL,
+            system_prompt=_costruisci_system_prompt(preferenze),
+            mcp_servers={tools.SERVER_NAME: server},
+            allowed_tools=tools.ALLOWED_TOOLS,
+            setting_sources=["user", "project"],
+            resume=resume,
+        )
 
-    pezzi_risposta: list[str] = []
-    nuovo_session_id = session_id
-    async for message in query(prompt=body.messaggio, options=options):
-        if isinstance(message, ResultMessage):
-            nuovo_session_id = message.session_id
-            if message.subtype == "success" and message.result:
-                pezzi_risposta.append(message.result)
+    async def _esegui(resume: str | None) -> tuple[list[str], str | None]:
+        pezzi: list[str] = []
+        nuovo_id = resume
+        async for message in query(prompt=body.messaggio, options=_opzioni(resume)):
+            if isinstance(message, ResultMessage):
+                nuovo_id = message.session_id
+                if message.subtype == "success" and message.result:
+                    pezzi.append(message.result)
+        return pezzi, nuovo_id
+
+    try:
+        pezzi_risposta, nuovo_session_id = await _esegui(session_id)
+    except ProcessError:
+        if session_id is None:
+            raise
+        # La sessione salvata non esiste più in questo container (vive solo
+        # su disco locale, non sopravvive a redeploy/riavvii - vedi
+        # DECISIONS.md). Si riparte con una sessione nuova invece di rompere
+        # la richiesta: nessun dato di Memoria è coinvolto, solo il contesto
+        # conversazionale precedente si perde.
+        pezzi_risposta, nuovo_session_id = await _esegui(None)
 
     if nuovo_session_id:
         await memoria_db.set_sessione_agent(tenant_id, nuovo_session_id)

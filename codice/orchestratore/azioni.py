@@ -13,6 +13,10 @@ from common.supabase_rest import rest_headers, supabase_settings
 from . import gmail_client
 
 TIPO_SEND_EMAIL = "send_email"
+TIPO_REPLY_EMAIL = "reply_email"
+TIPO_FORWARD_EMAIL = "forward_email"
+TIPO_SEND_DRAFT = "send_draft"
+TIPO_TRASH_EMAIL = "trash_email"
 
 STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
@@ -101,17 +105,65 @@ async def conferma_azione(
         await _aggiorna_stato(azione_id, STATO_RIFIUTATA)
         return {"stato": STATO_RIFIUTATA}
 
-    if azione["tipo"] == TIPO_SEND_EMAIL:
-        payload = azione["payload"]
-        try:
-            access_token = await gmail_client.ottieni_access_token(tenant_id)
-            await gmail_client.invia_messaggio(
-                access_token, payload["destinatario"], payload["oggetto"], payload["corpo"]
-            )
-        except Exception:
-            await _aggiorna_stato(azione_id, STATO_ERRORE)
-            raise
-        await _aggiorna_stato(azione_id, STATO_INVIATA)
-        return {"stato": STATO_INVIATA}
+    if azione["tipo"] not in _ESECUTORI:
+        raise ValueError(f"tipo azione sconosciuto: {azione['tipo']}")
 
-    raise ValueError(f"tipo azione sconosciuto: {azione['tipo']}")
+    payload = azione["payload"]
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        await _ESECUTORI[azione["tipo"]](access_token, payload)
+    except Exception:
+        await _aggiorna_stato(azione_id, STATO_ERRORE)
+        raise
+    await _aggiorna_stato(azione_id, STATO_INVIATA)
+    return {"stato": STATO_INVIATA}
+
+
+async def _esegui_send_email(access_token: str, payload: dict[str, Any]) -> None:
+    await gmail_client.invia_messaggio(
+        access_token,
+        payload["destinatario"],
+        payload["oggetto"],
+        payload["corpo"],
+        cc=payload.get("cc"),
+        bcc=payload.get("bcc"),
+    )
+
+
+async def _esegui_reply_email(access_token: str, payload: dict[str, Any]) -> None:
+    await gmail_client.rispondi_messaggio(
+        access_token,
+        payload["message_id"],
+        payload["corpo"],
+        destinatario=payload.get("destinatario"),
+        cc=payload.get("cc"),
+        bcc=payload.get("bcc"),
+    )
+
+
+async def _esegui_forward_email(access_token: str, payload: dict[str, Any]) -> None:
+    await gmail_client.inoltra_messaggio(
+        access_token,
+        payload["message_id"],
+        payload["destinatario"],
+        testo_aggiuntivo=payload.get("testo_aggiuntivo", ""),
+        cc=payload.get("cc"),
+        bcc=payload.get("bcc"),
+    )
+
+
+async def _esegui_send_draft(access_token: str, payload: dict[str, Any]) -> None:
+    await gmail_client.invia_bozza(access_token, payload["draft_id"])
+
+
+async def _esegui_trash_email(access_token: str, payload: dict[str, Any]) -> None:
+    await gmail_client.cestina_messaggio(access_token, payload["message_id"])
+
+
+_ESECUTORI = {
+    TIPO_SEND_EMAIL: _esegui_send_email,
+    TIPO_REPLY_EMAIL: _esegui_reply_email,
+    TIPO_FORWARD_EMAIL: _esegui_forward_email,
+    TIPO_SEND_DRAFT: _esegui_send_draft,
+    TIPO_TRASH_EMAIL: _esegui_trash_email,
+}

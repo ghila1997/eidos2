@@ -23,20 +23,32 @@
   l'agente non impara qualcosa in conversazione (l'estrazione automatica dai documenti arriva
   in Tappa 5, ma lo schema si disegna già ora per non doverlo rifare)
 - Filtro/classificazione delle mail **prima** dell'ingestione: non tutto quello che arriva in
-  casella va salvato in memoria (newsletter, notifiche, spam esclusi). Il meccanismo esatto
-  (subagente dedicato via `AgentDefinition`, o un passaggio di classificazione più leggero con
-  structured output) si decide costruendo il modulo, verificando prima le capacità SDK reali —
-  ma va progettato come componente riusabile: la stessa logica serve anche per classificare le
-  mail in generale (priorità, categoria), non solo per filtrare cosa ingerire
-- `draft_email` + `send_email` con conferma esplicita y/n nel loop CLI (gate nel codice, non
-  nel modello)
-- Interfaccia: CLI testuale
+  casella va salvato in memoria (newsletter, notifiche, spam esclusi). Deciso: singola chiamata
+  Anthropic Messages API pura (modello Haiku, non l'Agent SDK, non un subagent) con structured
+  output — componente riusabile anche per classificare la posta in generale (priorità,
+  categoria), non solo per filtrare cosa ingerire (vedi `codice/orchestratore/classification.py`)
+- Connettore Gmail **completo** (non solo cerca/bozza/invia): rispondere restando nel thread
+  giusto, inoltrare con allegati originali, segnare letta/non letta/archiviata/importante,
+  organizzare in etichette (creandole se mancano), leggere allegati, cestinare (sposta nel
+  cestino, non elimina in modo permanente), inviare una bozza già creata — criterio "completezza
+  dei connettori" in CLAUDE.md. `send_email`/`reply_email`/`forward_email`/`send_draft`/
+  `trash_email` passano tutti da un'azione in attesa di conferma esplicita dell'utente fuori dal
+  controllo del modello (endpoint separato, non `input()` nel loop — vedi DECISIONS.md); segnare
+  letta/archiviare/etichettare sono reversibili e eseguono subito, senza conferma
+- Miglioria nota non ancora applicata: il cursore di import usa `messages.list` con `after:`
+  (granularità giornaliera) invece di `users.history.list` (historyId, preciso) — vedi
+  `codice/orchestratore/gmail_client.py`
+- Interfaccia: CLI testuale, ma l'Orchestratore gira **server-side** (endpoint `/chat` sul
+  backend già deployato di Fondamenta, stessa auth a cookie) — il CLI è un client remoto
+  sottile, l'accesso da più dispositivi arriva gratis dall'auth esistente (vedi DECISIONS.md)
 - **Skills del Claude Agent SDK** (vedi `notes/idee-salvate-da-eidos-v1.md`, sezione
   Orchestratore): abilitare `setting_sources` e predisporre `.claude/skills/` da subito, anche
   se all'inizio con una sola skill di prova — più facile abilitarlo ora che aggiungerlo dopo
 - **Sblocca**: il primo vero "aha moment" (cercare nei propri dati e agire davvero)
-- **Finito quando**: il founder usa l'assistente da CLI per cercare qualcosa nelle mail reali
-  e farsi inviare un'email vera, con conferma esplicita prima dell'invio
+- **Finito quando**: il founder usa l'assistente da CLI (anche da un dispositivo diverso da
+  quello con cui si è loggato) per cercare qualcosa nelle mail reali, rispondere/inoltrare/
+  organizzare/cestinare una mail vera, e farsi inviare un'email vera - tutte le azioni che
+  spediscono o cestinano richiedono conferma esplicita prima di avvenire
 
 ## Tappa 3 — Agente Locale (prima azione reale sul PC)
 
@@ -106,7 +118,12 @@
   tool call dentro una sessione già in corso — nessuno dei due "risveglia" l'agente da solo).
   Serve infrastruttura dedicata: scheduler (es. APScheduler) per esecuzioni a orario fisso,
   webhook/poller per trigger su eventi (riusa le connessioni già attive dei Connettori Cloud,
-  es. nuova mail), storage delle definizioni automazione per tenant (Supabase)
+  es. nuova mail), storage delle definizioni automazione per tenant (Supabase). Per Gmail nello
+  specifico: `users.watch` + Cloud Pub/Sub è il meccanismo nativo di notifica push su mail
+  nuova (verificato sulla doc ufficiale Gmail API 2026-07-14, costruendo Tappa 2) - preferibile
+  a un poller quando si arriva qui, non reinventare la ruota
+- L'ingest mail (`codice/orchestratore/import_mail.py`, Tappa 2) diventa il corpo di
+  un'automazione schedulata invece che un comando on-demand: stessa pipeline, nuovo trigger
 - Esecuzione: ogni automazione, quando scatta, invoca l'Orchestratore con un prompt costruito
   dalla definizione salvata — stesso gate di conferma sulle azioni distruttive già in vigore
   per il resto del prodotto, nessuna eccezione perché l'azione parte da un trigger automatico

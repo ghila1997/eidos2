@@ -63,6 +63,21 @@ esiste un "memory tool" che gestisce automaticamente una cartella `/memories/`: 
 implementa con tool custom scritti a mano). Nessuna eccezione per capacità che "sembrano
 ovvie".
 
+## Completezza dei connettori — regola dura
+
+Prima di scegliere quali capacità di un connettore esterno (Gmail, Calendar, Storage, ecc.)
+implementare, fare una rassegna sistematica della superficie completa dell'API (tutte le
+risorse/metodi che espone), non scegliere a memoria o istinto in base ai soli requisiti
+minimi del design. Il criterio di completezza **non è** "tutta l'API" (impostazioni account,
+delega, S/MIME e simili restano fuori: sono amministrazione che nessun cliente chiede a un
+assistente in chat) **ma** "tutto quello che un essere umano fa normalmente con quella
+capacità" (per la mail: cercare, rispondere nel thread giusto, inoltrare, segnare
+letta/archiviare/importante, organizzare in cartelle/etichette, leggere allegati, cestinare —
+non solo cerca/bozza/invia). Il costo di aggiungere dopo una capacità mancante è basso se le
+fondamenta (storage credenziali per tenant, pattern di registrazione tool, gate di conferma
+per azioni distruttive) sono già generiche — non è una scusa per rimandare a caso, ma nemmeno
+un motivo per bloccare il lancio finché non è coperto tutto lo scibile di un'API.
+
 ## Verifica del comportamento agentico (eval)
 
 I test automatici verificano che il codice funzioni; non verificano che l'agente si comporti

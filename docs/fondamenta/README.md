@@ -26,8 +26,11 @@ credenziali a Supabase Auth (`sign_in_with_password`) e mette `access_token`/
 Schema (`supabase/migrations/20260713153000_fondamenta_tenants.sql`): tabelle
 `tenants` e `tenant_members` (`user_id`, `tenant_id`, `role`, default `owner`).
 Deploy: Railway, servizio collegato al repo GitHub (branch `main`), build via
-Nixpacks (root `requirements.txt` include `codice/requirements.txt`), start command
-in `railway.json` (`cd codice && uvicorn app:app ...`).
+`Dockerfile` alla root (non più Nixpacks dalla Tappa 2: il Claude Agent SDK
+richiede il CLI Node.js di Claude Code come sottoprocesso runtime, che
+Nixpacks-solo-Python non installava - vedi DECISIONS.md). Il Dockerfile
+installa Node.js+npm, il CLI Claude Code, le dipendenze Python da
+`codice/requirements.txt`, e avvia `uvicorn app:app` da dentro `codice/`.
 
 ## Come si prova
 
@@ -69,5 +72,5 @@ trappole sotto.
   mai esposta al client. Nessuna policy RLS per `anon`/`authenticated` è ancora
   definita su `tenants`/`tenant_members` — da fare quando un modulo avrà bisogno di
   accesso diretto client-side (non prima).
-- Root `requirements.txt` (`-r codice/requirements.txt`) esiste solo perché Nixpacks
-  rileva Python guardando la root del repo: se si sposta `codice/`, va aggiornato.
+- Build via `Dockerfile` (non più Nixpacks): se si sposta `codice/`, aggiornare
+  i path `COPY` nel `Dockerfile` alla root.
