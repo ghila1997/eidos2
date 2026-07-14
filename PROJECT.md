@@ -1,7 +1,7 @@
 # Eidos 2.0
 
 > Indice del progetto. Descrive lo stato attuale del sistema — non i piani.
-> Ultimo allineamento: 2026-07-13
+> Ultimo allineamento: 2026-07-14
 
 ## Cos'è
 
@@ -33,8 +33,8 @@ sottile ma vero end-to-end, si ispessisce un pezzo alla volta (dettagli in ROADM
 | Modulo | Responsabilità | Stato | Docs |
 |---|---|---|---|
 | Fondamenta | Autentica il founder (single-user) su Supabase, schema con `tenant_id` da subito. Ruoli/permessi granulari (Grant), audit log, dispositivi: Tappa 8 | costruito (v1 minima) | [docs/fondamenta/README.md](docs/fondamenta/README.md) |
-| Orchestratore | Capisce l'intento, decide azione diretta vs delega a subagente, coordina gli altri moduli | pianificato | — |
-| Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime), tabelle strutturate interrogate su richiesta (fatti su clienti/progetti, anche estratti da documenti), ricerca semantica (pgvector) su email/documenti. Include l'archiviazione dei documenti originali (storage file) e un filtro/classificatore di mail prima dell'ingestione (componente riusabile anche per classificare la posta in generale) | pianificato | — |
+| Orchestratore | Agente conversazionale singolo (Claude Agent SDK), connettore Gmail completo (cerca/rispondi/inoltra/organizza/invia), decide azione diretta vs delega a subagente (non ancora servito) | costruito (v1, single-user) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
+| Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime, costruito), tabelle strutturate per fatti (schema pronto, vuoto finché l'agente non impara in conversazione), ricerca semantica (pgvector) su mail importate (costruito). Estrazione strutturata da documenti generici: Tappa 5 | costruito (v1, solo mail) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
 | Connettori Cloud | Email/calendario/storage/messaggistica/ricerca web, OAuth per singola capacità | pianificato | — |
 | Agente Locale | File/cartelle/terminale/browser sul PC del cliente, sessione isolata dalla macchina ospite | pianificato | — |
 | Voce | STT/TTS (da riprogettare da zero, nessuna decisione ereditata) | pianificato | — |

@@ -14,7 +14,7 @@
 - **Finito quando**: il founder si autentica e un commit su main arriva in produzione da solo
 - Dettagli: [docs/fondamenta/README.md](docs/fondamenta/README.md)
 
-## Tappa 2 — Orchestratore minimo + Memoria (prima istanza)
+## Tappa 2 — Orchestratore minimo + Memoria (prima istanza) — ✅ fatto (2026-07-14)
 
 - Agente singolo (Claude Agent SDK, `ClaudeSDKClient`), tool custom via `@tool`
 - Memoria, versione minima: poche righe sempre caricate (preferenze base) + ricerca semantica
