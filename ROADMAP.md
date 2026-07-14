@@ -35,9 +35,6 @@
   `trash_email` passano tutti da un'azione in attesa di conferma esplicita dell'utente fuori dal
   controllo del modello (endpoint separato, non `input()` nel loop — vedi DECISIONS.md); segnare
   letta/archiviare/etichettare sono reversibili e eseguono subito, senza conferma
-- Miglioria nota non ancora applicata: il cursore di import usa `messages.list` con `after:`
-  (granularità giornaliera) invece di `users.history.list` (historyId, preciso) — vedi
-  `codice/orchestratore/gmail_client.py`
 - Interfaccia: CLI testuale, ma l'Orchestratore gira **server-side** (endpoint `/chat` sul
   backend già deployato di Fondamenta, stessa auth a cookie) — il CLI è un client remoto
   sottile, l'accesso da più dispositivi arriva gratis dall'auth esistente (vedi DECISIONS.md)

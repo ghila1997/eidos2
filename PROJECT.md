@@ -48,4 +48,7 @@ I README di modulo (`docs/{{modulo}}/README.md`) si scrivono quando il modulo vi
 
 - [DECISIONS.md](DECISIONS.md) — log delle decisioni architetturali (append-only)
 - [ROADMAP.md](ROADMAP.md) — ordine di implementazione dei moduli (walking skeleton)
+- [playbook/connettori.md](playbook/connettori.md) — checklist operativa per implementare un
+  connettore, estratta da Gmail (Tappa 2); vedi CLAUDE.md, "Playbook operativi", per
+  quando/come si scrive un playbook
 - `notes/idee-salvate-da-eidos-v1.md` — idee recuperate dal progetto precedente, non ancora decise per questo progetto

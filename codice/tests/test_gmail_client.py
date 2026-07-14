@@ -1,8 +1,12 @@
 """Trappole di gmail_client: risposta nel thread giusto, inoltro con
-allegati originali, creazione etichetta solo se manca davvero."""
+allegati originali, creazione etichetta solo se manca davvero,
+incrementale via history.list."""
+import httpx
 import pytest
 
 from orchestratore import gmail_client
+
+_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 ORIGINALE = {
     "message_id": "msg-orig",
@@ -134,3 +138,62 @@ async def test_trova_o_crea_etichetta_crea_se_mancante(monkeypatch):
     etichetta_id = await gmail_client.trova_o_crea_etichetta("token", "Fornitori")
 
     assert etichetta_id == "label-nuovo"
+
+
+@pytest.mark.asyncio
+async def test_lista_messaggi_nuovi_con_cursore_usa_history_list(respx_mock):
+    """Con un cursore (historyId) esistente, l'incrementale passa da
+    history.list, non da un fetch pieno."""
+    route = respx_mock.get(f"{_API_BASE}/history").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "history": [
+                    {"messagesAdded": [{"message": {"id": "msg-1"}}]},
+                    {"messagesAdded": [{"message": {"id": "msg-2"}}]},
+                ],
+                "historyId": "54321",
+            },
+        )
+    )
+
+    ids, nuovo_cursore = await gmail_client.lista_messaggi_nuovi("token", "12345")
+
+    assert route.calls.last.request.url.params["startHistoryId"] == "12345"
+    assert ids == ["msg-1", "msg-2"]
+    assert nuovo_cursore == "54321"
+
+
+@pytest.mark.asyncio
+async def test_lista_messaggi_nuovi_senza_cursore_fa_fetch_pieno(respx_mock):
+    """Primo import (nessun cursore): fetch pieno via messages.list, nuovo
+    cursore preso da getProfile, non da history.list."""
+    respx_mock.get(f"{_API_BASE}/messages").mock(
+        return_value=httpx.Response(200, json={"messages": [{"id": "msg-1"}, {"id": "msg-2"}]})
+    )
+    respx_mock.get(f"{_API_BASE}/profile").mock(
+        return_value=httpx.Response(200, json={"historyId": "99999"})
+    )
+
+    ids, nuovo_cursore = await gmail_client.lista_messaggi_nuovi("token", None)
+
+    assert ids == ["msg-1", "msg-2"]
+    assert nuovo_cursore == "99999"
+
+
+@pytest.mark.asyncio
+async def test_lista_messaggi_nuovi_con_cursore_scaduto_fa_fallback_a_fetch_pieno(respx_mock):
+    """Trappola: se Gmail scarta il cursore (historyId troppo vecchio,
+    404), non deve esplodere - deve ripiegare su un fetch pieno."""
+    respx_mock.get(f"{_API_BASE}/history").mock(return_value=httpx.Response(404))
+    respx_mock.get(f"{_API_BASE}/messages").mock(
+        return_value=httpx.Response(200, json={"messages": [{"id": "msg-3"}]})
+    )
+    respx_mock.get(f"{_API_BASE}/profile").mock(
+        return_value=httpx.Response(200, json={"historyId": "11111"})
+    )
+
+    ids, nuovo_cursore = await gmail_client.lista_messaggi_nuovi("token", "cursore-vecchio")
+
+    assert ids == ["msg-3"]
+    assert nuovo_cursore == "11111"

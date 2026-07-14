@@ -311,3 +311,38 @@ inseguire ulteriormente.
 **Conseguenze**: nessuna azione di codice necessaria. Se un cliente futuro segnala "le mie
 risposte non si vedono raggruppate nella cartella Inviata", si spiega come comportamento noto
 di Gmail (vista Inviata), non un bug di Eidos.
+
+---
+
+## 2026-07-14 — Playbook riutilizzabili: si estraggono da un'implementazione reale, non a priori
+
+**Contesto**: costruito il connettore Gmail (Tappa 2), l'utente ha chiesto di fissare le
+linee guida seguite (completezza, gate di conferma, test, verifica reale, cursori
+incrementali) in un documento, in modo che tra qualche mese un nuovo connettore (Calendar,
+Storage — Tappa 4) segua lo stesso standard invece di reinventarlo o abbassare il livello.
+Stessa esigenza si riproporrà per altre categorie di lavoro che si ripeteranno nel progetto.
+
+**Decisione**: primo playbook creato in [playbook/connettori.md](playbook/connettori.md),
+cartella dedicata `playbook/` (non `docs/`, che resta per le specifiche di modulo), distillato
+da com'è stato costruito davvero Gmail (struttura codice, gate di conferma, sync incrementale,
+pattern di test, cosa documentare) - non da teoria scritta a priori. Regola generale: quando
+una categoria di lavoro si ripeterà **e un prossimo caso è già previsto**, si estrae un
+playbook concreto in `playbook/<tema>.md` subito dopo la prima implementazione reale, non
+prima e non per speculazione. I principi ("perché") restano in CLAUDE.md, che linka il
+playbook; il playbook è il "come, concretamente", è vivo (si aggiorna quando un caso reale lo
+smentisce) e le discrepanze si segnalano all'utente invece di forzare la conformità in
+silenzio - criteri completi in CLAUDE.md, sezione "Playbook operativi".
+
+**Alternative considerate**: scrivere playbook teorici in anticipo per ogni categoria
+prevista - scartata, rischio di codificare principi mai verificati contro un caso reale
+(stesso errore metodologico che ha causato il reboot di Eidos v1: costruire/decidere in
+isolamento senza validazione reale); mettere la checklist operativa dentro CLAUDE.md invece di
+un documento dedicato - scartata, CLAUDE.md deve restare la lettura d'apertura di ogni sessione
+con le regole dure di progetto, non accumulare checklist operative per singola categoria di
+lavoro.
+
+**Conseguenze**: CLAUDE.md e PROJECT.md linkano il nuovo file invece di duplicarne il
+contenuto; ogni prossimo connettore (Calendar/Storage, Tappa 4) parte da questo playbook;
+quando emergerà un'altra categoria di lavoro ricorrente (es. subagent, automazioni) si
+estrarrà un playbook analogo dopo la prima implementazione reale di quella categoria, non
+prima.

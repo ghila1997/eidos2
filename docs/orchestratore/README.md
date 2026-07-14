@@ -82,8 +82,11 @@ Test automatici: `codice/tests/test_tools.py`, `test_azioni.py`, `test_gmail_cli
 - "Cancellare" una mail sposta nel cestino (`messages.trash`), non elimina in modo
   permanente — lo scope OAuth (`gmail.modify`) non consente l'eliminazione immediata,
   scelta deliberata (vedi DECISIONS.md)
-- L'import incrementale usa `after:<timestamp>` (granularità giornaliera Gmail), non
-  `history.list` (più preciso) — miglioria nota, non ancora applicata
+- L'import incrementale usa `users.history.list` (cursore = historyId Gmail, preciso a
+  livello di singolo evento). Se l'historyId scade lato Gmail (404, finestra di
+  conservazione limitata) o manca (primo import), fa fallback a un fetch pieno via
+  `messages.list` + nuovo historyId da `users.getProfile` — dedup esistente copre eventuali
+  mail già importate ripescate dal fetch pieno
 - `claude-agent-sdk` richiede il CLI Node.js come sottoprocesso runtime: build via
   `Dockerfile` (non Nixpacks), versione >=0.2.118 (la 0.1.69 aveva un bug nella risposta
   dei tool custom)

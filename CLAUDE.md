@@ -20,6 +20,7 @@ EIDOS2.0/
   ROADMAP.md
   notes/          idee non ancora decise per questo progetto (incluse quelle recuperate da Eidos v1)
   docs/           specifiche di modulo (una per modulo, scritte quando il modulo si costruisce)
+  playbook/       checklist operative per categorie di lavoro che si ripetono (vedi sotto)
   codice/         codice del progetto
 ```
 
@@ -78,6 +79,9 @@ fondamenta (storage credenziali per tenant, pattern di registrazione tool, gate 
 per azioni distruttive) sono già generiche — non è una scusa per rimandare a caso, ma nemmeno
 un motivo per bloccare il lancio finché non è coperto tutto lo scibile di un'API.
 
+Checklist operativa concreta in [playbook/connettori.md](playbook/connettori.md) — vedi
+sezione "Playbook operativi" sotto per quando/come si scrive un playbook.
+
 ## Verifica del comportamento agentico (eval)
 
 I test automatici verificano che il codice funzioni; non verificano che l'agente si comporti
@@ -125,6 +129,37 @@ mai:**
 - Prima di toccare il codice di un modulo esistente, leggere il suo README.
 - Se docs e codice si contraddicono: non scegliere in silenzio chi ha ragione,
   portare la discrepanza all'utente.
+
+## Playbook operativi
+
+Un playbook (`playbook/<tema>.md`) è una checklist concreta per una categoria di lavoro che
+si ripeterà (es. "implementare un connettore"). Non è gratis: un playbook scritto male è
+peggio di nessun playbook, perché dà falsa sicurezza — si segue senza pensare invece di
+ragionare sul caso specifico. Regole, senza sconti:
+
+- **Si scrive solo dopo una prima implementazione reale**, mai a priori. Un playbook basato su
+  teoria non ancora verificata contro il codice vero ripete l'identico errore che ha causato
+  il reboot di Eidos v1: decidere/costruire in isolamento senza validazione reale. Se non
+  esiste ancora un caso reale completo, non c'è niente da estrarre — si aspetta.
+- **Si scrive solo se un prossimo caso è già previsto**, non "perché potrebbe tornare utile".
+  Un connettore Gmail fatto e un Calendar già in ROADMAP.md giustificano il playbook
+  connettori; un'implementazione singola senza ripetizione pianificata non lo giustifica —
+  è overengineering documentale, la stessa trappola delle astrazioni premature nel codice.
+- **Contiene solo il "come, concretamente"**: struttura file, pattern di test, checklist
+  step-by-step. Il "perché" (principi, criteri, decisioni con alternative scartate) resta in
+  CLAUDE.md/DECISIONS.md, linkato — non duplicato. Un playbook che ripete i principi invece di
+  linkarli si disallinea dalla fonte alla prima modifica.
+- **È vivo, non un one-shot**: se il prossimo caso reale lo smentisce anche solo su un punto,
+  si aggiorna subito quel file — non si forza il caso nuovo a conformarsi a un punto ormai
+  sbagliato. Un playbook che nessuno tocca dopo il primo caso è già stantio al secondo:
+  trattarlo come intoccabile è peggio che non averlo.
+- **Se un caso reale non rientra nel playbook**, la discrepanza si segnala esplicitamente
+  all'utente (stesso principio di "docs e codice si contraddicono" sopra) invece di piegare in
+  silenzio il playbook o il codice per farli coincidere.
+
+Non serve una skill dedicata per scriverne uno: è un aggiornamento di documentazione come un
+README di modulo, si fa nello stesso passaggio in cui si chiude il ciclo del lavoro che lo
+genera.
 
 ## Cambiamenti alla mappa del progetto
 

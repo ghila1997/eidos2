@@ -16,7 +16,6 @@ comportamento di un umano che cancella da Gmail.
 from __future__ import annotations
 
 import base64
-import time
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -56,26 +55,54 @@ def _headers(access_token: str) -> dict:
 async def lista_messaggi_nuovi(
     access_token: str, cursore: str | None
 ) -> tuple[list[str], str]:
-    """Ritorna (id messaggi nuovi, nuovo cursore). Cursore = timestamp unix
-    dell'ultimo import; usa la ricerca Gmail "after:" per l'incrementale.
+    """Ritorna (id messaggi nuovi, nuovo cursore). Cursore = historyId Gmail
+    dell'ultimo import; usa `users.history.list` per l'incrementale (preciso
+    a livello di singolo evento, non a giorno come la vecchia ricerca
+    "after:").
 
-    Nota: "after:" ha granularità giornaliera, non precisa quanto
-    `users.history.list` (che usa un historyId incrementale) - miglioria
-    nota, non ancora applicata qui (vedi DECISIONS.md)."""
-    query = f"after:{cursore}" if cursore else None
-    params = {"maxResults": "50"}
-    if query:
-        params["q"] = query
+    Se manca un cursore, o Gmail lo rifiuta con 404 (historyId troppo vecchio:
+    Gmail conserva la storia solo per un periodo limitato), si fa un fetch
+    pieno via `messages.list` e si riparte da un nuovo historyId preso da
+    `users.getProfile` - dedup a valle (import_mail.py) copre gli eventuali
+    messaggi già importati ripescati da un fetch pieno."""
+    if cursore:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{_API_BASE}/history",
+                params={
+                    "startHistoryId": cursore,
+                    "historyTypes": "messageAdded",
+                    "maxResults": "50",
+                },
+                headers=_headers(access_token),
+            )
+        if resp.status_code == 200:
+            body = resp.json()
+            ids = [
+                aggiunta["message"]["id"]
+                for voce in body.get("history", [])
+                for aggiunta in voce.get("messagesAdded", [])
+            ]
+            return ids, str(body.get("historyId", cursore))
+        if resp.status_code != 404:
+            raise GmailError(f"Gmail history.list fallita: {resp.status_code}")
+        # 404: historyId scaduto lato Gmail - fallback a fetch pieno sotto
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{_API_BASE}/messages", params=params, headers=_headers(access_token)
+            f"{_API_BASE}/messages",
+            params={"maxResults": "50"},
+            headers=_headers(access_token),
         )
     if resp.status_code != 200:
         raise GmailError(f"Gmail messages.list fallita: {resp.status_code}")
-    body = resp.json()
-    ids = [m["id"] for m in body.get("messages", [])]
-    return ids, str(int(time.time()))
+    ids = [m["id"] for m in resp.json().get("messages", [])]
+
+    async with httpx.AsyncClient() as client:
+        profilo = await client.get(f"{_API_BASE}/profile", headers=_headers(access_token))
+    if profilo.status_code != 200:
+        raise GmailError(f"Gmail getProfile fallita: {profilo.status_code}")
+    return ids, str(profilo.json()["historyId"])
 
 
 def _estrai_corpo(payload: dict) -> str:
