@@ -40,6 +40,10 @@
 
 ## Tappa 3 — Agente Locale (prima azione reale sul PC)
 
+- **Prerequisito**: aprire un secondo progetto Supabase dedicato a sviluppo/test (stesse
+  migration del progetto di produzione) — vedi DECISIONS.md, "Ambienti: nessuno staging per
+  ora, un solo Supabase fino a Tappa 3". Da qui in poi le azioni reali diventano abbastanza
+  rischiose da non testarle più contro il database di produzione
 - File/cartelle: almeno un'azione concreta (leggere/scrivere/organizzare un documento reale)
 - Sessione isolata dalla macchina ospite (da riprogettare da zero, nessuna decisione ereditata)
 - **Finito quando**: un comando in linguaggio naturale produce un'azione reale verificabile su

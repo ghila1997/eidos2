@@ -161,3 +161,31 @@ DB e vanificato lo scopo del reboot "sul pulito".
 **Conseguenze**: due progetti Supabase esistono nello stesso account nel breve periodo (quello
 vecchio va gestito a parte, fuori da questo ciclo di costruzione); nessun dato/tabella di
 Eidos v1 nel database che il prodotto usa davvero da qui in avanti.
+
+---
+
+## 2026-07-14 — Ambienti: nessuno staging per ora, un solo Supabase fino a Tappa 3
+
+**Contesto**: un solo ramo (`main`) collegato a Railway, push su `main` = deploy diretto in
+produzione (vedi docs/fondamenta/README.md); un solo progetto Supabase (`eidos2`), nessun
+ambiente di test separato. L'utente ha chiesto come testare aggiornamenti futuri senza
+toccare produzione.
+
+**Decisione**: per ora si resta su un solo ambiente, coerente col metodo walking skeleton
+(single-user, overhead minimo — vedi "Metodo di costruzione: walking skeleton" sopra). Il
+codice si sviluppa e prova in locale prima del push; il push su `main` resta il gate verso
+produzione (STOP 2 del ciclo modulo in CLAUDE.md già impone test manuale prima del commit).
+Il database resta il progetto Supabase di produzione finché le azioni eseguibili restano a
+basso rischio (Tappa 2, dati solo del founder). **Prima di iniziare Tappa 3 (Agente Locale) o
+Tappa 4 (Connettori Cloud)** — dove l'agente inizia a eseguire azioni reali più rischiose su
+file/calendario — va aperto un secondo progetto Supabase dedicato a sviluppo/test, con le
+stesse migration applicate.
+
+**Alternative considerate**: aprire subito un ambiente di staging separato (Railway + Supabase)
+— scartata per ora, overhead prematuro con un solo utente e azioni ancora a basso rischio
+(coerente col principio "la scelta più semplice che non chiude porte"); restare su un solo
+ambiente per sempre — scartata, il rischio cresce con le azioni reali delle Tappe 3-4 e un
+retrofit tardivo costerebbe di più.
+
+**Conseguenze**: nessun lavoro extra ora; da Tappa 3 in poi la roadmap include l'apertura di un
+secondo progetto Supabase come prerequisito, non più rimandabile a piacere.
