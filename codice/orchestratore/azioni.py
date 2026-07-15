@@ -10,13 +10,16 @@ from typing import Any
 import httpx
 
 from common.supabase_rest import rest_headers, supabase_settings
-from . import gmail_client
+from . import calendar_client, gmail_client
 
 TIPO_SEND_EMAIL = "send_email"
 TIPO_REPLY_EMAIL = "reply_email"
 TIPO_FORWARD_EMAIL = "forward_email"
 TIPO_SEND_DRAFT = "send_draft"
 TIPO_TRASH_EMAIL = "trash_email"
+TIPO_CREATE_EVENT = "create_event"
+TIPO_UPDATE_EVENT = "update_event"
+TIPO_DELETE_EVENT = "delete_event"
 
 STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
@@ -164,10 +167,35 @@ async def _esegui_trash_email(tenant_id: str, payload: dict[str, Any]) -> None:
     await gmail_client.cestina_messaggio(access_token, payload["message_id"])
 
 
+async def _esegui_create_event(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await calendar_client.ottieni_access_token(tenant_id)
+    await calendar_client.crea_evento(access_token, **payload)
+
+
+async def _esegui_update_event(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await calendar_client.ottieni_access_token(tenant_id)
+    campi = {k: v for k, v in payload.items() if k not in ("event_id", "notifica", "calendario")}
+    await calendar_client.aggiorna_evento(
+        access_token, payload["event_id"],
+        notifica=payload["notifica"], calendario=payload.get("calendario"), **campi,
+    )
+
+
+async def _esegui_delete_event(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await calendar_client.ottieni_access_token(tenant_id)
+    await calendar_client.elimina_evento(
+        access_token, payload["event_id"],
+        notifica=payload["notifica"], calendario=payload.get("calendario"),
+    )
+
+
 _ESECUTORI = {
     TIPO_SEND_EMAIL: _esegui_send_email,
     TIPO_REPLY_EMAIL: _esegui_reply_email,
     TIPO_FORWARD_EMAIL: _esegui_forward_email,
     TIPO_SEND_DRAFT: _esegui_send_draft,
     TIPO_TRASH_EMAIL: _esegui_trash_email,
+    TIPO_CREATE_EVENT: _esegui_create_event,
+    TIPO_UPDATE_EVENT: _esegui_update_event,
+    TIPO_DELETE_EVENT: _esegui_delete_event,
 }

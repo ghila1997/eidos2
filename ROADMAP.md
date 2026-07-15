@@ -92,6 +92,25 @@
   Gmail-specifica — non fatto in Tappa 2/3 perché con un solo provider la mescolanza non causa
   ancora danno reale (vedi DECISIONS.md, decisione di non anticipare questo refactor)
 - **Finito quando**: il founder crea/legge un evento di calendario reale tramite l'assistente
+- **Suite Google ora, Suite Microsoft dopo**. Target imprenditori/PMI usa in modo diffuso
+  entrambi gli ecosistemi (Google Workspace e Microsoft 365) — non è un'idea da valutare "se",
+  è un candidato reale già riconosciuto. Ma si costruisce **una suite alla volta**, validata
+  end-to-end (STOP 2 con uso reale) prima di iniziare la successiva — mai due connettori dello
+  stesso tipo (due calendari, due caselle mail) non provati in parallelo (vedi DECISIONS.md
+  2026-07-15, "Connettori multi-provider"):
+  - **Ora**: Google Calendar (questa tappa). Drive/storage Google quando si arriva a quella
+    parte di Tappa 4.
+  - **Dopo, quando la suite Google è validata**: Suite Microsoft — Outlook Calendar, Outlook
+    Mail (secondo fornitore oltre Gmail), OneDrive. OAuth separato (Microsoft identity
+    platform, flusso diverso da Google), client dedicati (Microsoft Graph API — campi propri:
+    `subject` non `summary`, `body` non `description`, ricorrenza non-RRULE per Calendar).
+    Nessun refactor preventivo di `gmail_client.py`/`tools.py`/client Google "per coerenza"
+    prima che Outlook sia davvero in costruzione.
+  - Accorgimento già preso ora, a costo quasi zero: contratti dei tool esposti al modello
+    (nomi, forma di parametri/risultati — `search_events`, `create_event`, ecc.) restano
+    agnostici dal fornitore fin dalla prima implementazione, così la Suite Microsoft si
+    aggiunge come nuovi client + smistamento interno per `provider`, senza cambiare
+    l'interfaccia che il modello ha già imparato a usare
 
 ## Tappa 5 — Memoria: estensione documenti (non un modulo a parte)
 
@@ -127,6 +146,16 @@
 - **Finito quando**: un secondo utente reale (non il founder) si registra da solo, collega un
   proprio account cloud senza aiuto, si autentica in un tenant separato e opera con permessi
   corretti
+- **Da decidere qui, non prima**: il pattern "OAuth per singola capacità" (Tappa 2/4 - un
+  consenso Google separato per Gmail, uno per Calendar, uno per ogni capacità futura) va bene
+  per il founder che collega le cose una alla volta testando a mano, ma un cliente reale che si
+  registra da solo potrebbe abbandonare se deve cliccare 3 schermate di consenso Google in fila
+  durante l'onboarding. Da valutare qui, con un flusso di onboarding reale davanti: un consenso
+  Google unico che chiede insieme tutti gli scope già disponibili al momento della
+  registrazione (Gmail+Calendar+quel che c'è), riservando l'incrementale (`include_granted_scopes`,
+  già usato da Tappa 4) solo a capacità aggiunte *dopo* la registrazione iniziale - non decidere
+  ora sulla base del solo uso da founder, il costo di frizione si vede solo con un onboarding
+  self-service vero (vedi discussione 2026-07-15 costruendo il connettore Calendar)
 
 ## Tappa 9 — Consumi + Billing
 
@@ -151,6 +180,12 @@
   a un poller quando si arriva qui, non reinventare la ruota
 - L'ingest mail (`codice/orchestratore/import_mail.py`, Tappa 2) diventa il corpo di
   un'automazione schedulata invece che un comando on-demand: stessa pipeline, nuovo trigger
+- **Automazione "evento calendario concluso"** (identificata costruendo Tappa 4, Connettori
+  Cloud): quando un'automazione può attivarsi su trigger, aggiungere un'automazione che rileva
+  eventi calendario conclusi senza un fatto collegato in Memoria e chiede al founder conferma +
+  cosa è stato detto/deciso (scrittura poi via `remember_fact`, vedi Tappa 4). In Tappa 4 questo
+  resta reattivo (il founder lo dice quando vuole in chat, nessun trigger automatico) proprio
+  perché l'infrastruttura di scheduling/trigger non esiste ancora prima di questa tappa
 - Esecuzione: ogni automazione, quando scatta, invoca l'Orchestratore con un prompt costruito
   dalla definizione salvata — stesso gate di conferma sulle azioni distruttive già in vigore
   per il resto del prodotto, nessuna eccezione perché l'azione parte da un trigger automatico

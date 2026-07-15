@@ -76,6 +76,39 @@ async def get_fatto(tenant_id: str, entity_key: str) -> dict | None:
     return rows[0] if rows else None
 
 
+async def find_fatti_ilike(tenant_id: str, query: str) -> list[dict]:
+    """Ricerca fatti per entity_key, case-insensitive, match parziale - usata
+    da search_memoria (orchestratore/tools.py) per garantire che un fatto
+    salvato compaia sempre se il nome combacia, non solo se il ranking di
+    similarità semantica lo fa rientrare nei primi risultati (vedi
+    DECISIONS.md 2026-07-15, "Tappa 4: Memoria")."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_fatti",
+            params={"tenant_id": f"eq.{tenant_id}", "entity_key": f"ilike.*{query}*"},
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def elimina_chunk_documento(tenant_id: str, documento_id: str) -> None:
+    """Rimuove i chunk esistenti di un documento aggiornabile (es. un fatto
+    re-embeddato dopo un nuovo remember_fact) prima di inserirne di nuovi -
+    a differenza di mail/eventi (immutabili una volta importati), i fatti
+    cambiano nel tempo e il loro embedding deve restare allineato allo
+    stato corrente, non accumulare versioni superate."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"{url}/rest/v1/memoria_chunk_embedding",
+            params={"tenant_id": f"eq.{tenant_id}", "documento_id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+
+
 async def find_documento_by_hash(tenant_id: str, content_hash: str) -> dict | None:
     url, key = supabase_settings()
     async with httpx.AsyncClient() as client:

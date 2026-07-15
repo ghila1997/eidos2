@@ -41,6 +41,31 @@ async def test_match_chunks_filtra_sempre_per_tenant(respx_mock):
 
 
 @pytest.mark.asyncio
+async def test_find_fatti_ilike_usa_match_parziale_case_insensitive(respx_mock):
+    route = respx_mock.get(f"{SUPABASE_URL}/rest/v1/memoria_fatti").mock(
+        return_value=httpx.Response(200, json=[{"entity_key": "rossi", "entity_type": "persona", "data": {}}])
+    )
+
+    risultato = await memoria_db.find_fatti_ilike(TENANT, "Rossi")
+
+    assert risultato[0]["entity_key"] == "rossi"
+    assert route.calls.last.request.url.params["entity_key"] == "ilike.*Rossi*"
+
+
+@pytest.mark.asyncio
+async def test_elimina_chunk_documento_filtra_per_tenant_e_documento(respx_mock):
+    route = respx_mock.delete(f"{SUPABASE_URL}/rest/v1/memoria_chunk_embedding").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    await memoria_db.elimina_chunk_documento(TENANT, "doc-1")
+
+    params = route.calls.last.request.url.params
+    assert params["tenant_id"] == f"eq.{TENANT}"
+    assert params["documento_id"] == "eq.doc-1"
+
+
+@pytest.mark.asyncio
 async def test_get_preferenze_richiede_bound_esplicito(respx_mock):
     """Le preferenze sempre caricate devono restare 'poche righe': la query
     porta sempre un limit esplicito, non un fetch illimitato."""

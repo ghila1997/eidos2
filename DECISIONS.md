@@ -581,3 +581,93 @@ dell'abbonamento flat deve coprire quel costo). Resta aperto, e va risolto quand
 distribuzione reale di Agente Locale a un cliente non tecnico (vedi nota in
 `notes/idee-prodotto-eidos2.md`), come consegnare in modo sicuro l'`ANTHROPIC_API_KEY` di Eidos al
 processo locale sul PC del cliente senza che il cliente debba gestire credenziali Anthropic a mano.
+
+---
+
+## 2026-07-15 — Tappa 4 (Calendar): Memoria — lettura unificata, scrittura esplicita, calendario vivo vs concluso
+
+**Contesto**: progettando il connettore Calendar (Tappa 4), la domanda "dammi tutto quello che sai
+su [persona]" ha fatto emergere due problemi nel design iniziale (`search_emails` + `search_events`
++ un ipotizzato `recall_fact` separato): (1) `search_events` interrogava sempre live Google
+Calendar, anche per eventi passati/conclusi, quando quelli sono di fatto immutabili e potrebbero
+beneficiare della stessa ricerca semantica già usata per le mail; (2) un tool `recall_fact`
+separato per i fatti strutturati (`memoria_fatti`) avrebbe reintrodotto lo stesso rischio già
+risolto per Gmail — con più tool di lettura sovrapposti nello scopo ("cosa so su X"), il modello
+rischia di usarne solo alcuni e perdere informazioni, senza che l'utente se ne accorga (rischio
+diverso e più insidioso dell'errore su azioni, dove il verbo richiesto è specifico e la scelta è a
+bassa ambiguità).
+
+**Decisione**:
+- **Calendario: vivo vs concluso**. Eventi futuri/in corso restano query live (`search_events`,
+  chiama Google Calendar API a ogni richiesta — serve dato fresco per decisioni di
+  scheduling/disponibilità). Eventi conclusi (`end < now`) vengono importati in Memoria con la
+  stessa pipeline delle mail (nuovo `import_calendar.py`, mirror di `import_mail.py`, cursore
+  nativo `syncToken` invece di `historyId`, nessuna classificazione Haiku perché non serve filtro
+  spam su un calendario personale), riusando le tabelle esistenti `memoria_documenti`+
+  `memoria_chunk_embedding` con `source_type="calendar_event"` — nessuna tabella nuova.
+- **Lettura di memoria unificata in un solo tool**: `search_emails` generalizzato/rinominato in
+  `search_memoria(query, tipo?)`, che internamente combina (a) match esatto/parziale su
+  `entity_key` di `memoria_fatti` (garantito presente nei risultati se il nome combacia, non
+  dipendente dal ranking di similarità che con `match_count=5` potrebbe seppellirlo sotto
+  frammenti di mail) e (b) ricerca semantica su `memoria_chunk_embedding` (mail + eventi conclusi
+  + fatti anch'essi embeddati). Nessun tool `recall_fact` separato: la garanzia di precisione sui
+  fatti è un dettaglio implementativo dentro `search_memoria`, non un tool aggiuntivo che il
+  modello deve scegliere di usare.
+- **Scrittura sempre esplicita, mai automatica**: `remember_fact(entity_key, nota)` si attiva solo
+  quando l'utente esprime intenzione chiara di far ricordare qualcosa ("ricorda che...", "prendi
+  nota", "segna che devo...") — mai in automatico da informazioni menzionate di passaggio in
+  conversazione. Motivo: `memoria_fatti` è upsert (un record per entità, sovrascritto), un
+  salvataggio automatico sbagliato corrompe lo stato canonico invece di aggiungersi come frammento
+  innocuo tra tanti (rischio concentrato, non diluito come per i chunk di ricerca). Vincolo
+  imposto nella `description` del tool (il modello la legge per decidere quando chiamarlo), non in
+  un controllo separato.
+
+**Alternative considerate**: 4 tool di lettura distinti (`search_emails`, `search_events` anche
+per il passato, `recall_fact`) — scartata, stesso overlap di scopo già visto come problema;
+fondere anche `search_events` dentro `search_memoria` — scartata, fonderebbe una chiamata di rete
+live con una query DB locale dentro un tool solo, nascondendo al modello (e all'audit) quando sta
+facendo l'una o l'altra; scrittura automatica dei fatti durante conversazioni normali — scartata,
+rischio di sporcare la memoria canonica senza che l'utente lo sappia, in tensione con la decisione
+originale di Memoria ("poche righe curate", Tappa 2).
+
+**Conseguenze**: `search_emails` (Tappa 2) viene rinominato/generalizzato in `search_memoria` —
+capacità mail invariata, solo ambito esteso; nuovo `import_calendar.py` + endpoint
+`POST /import-calendar` (on-demand, automatico resta Tappa 10 — annotata lì anche l'automazione
+"evento concluso → chiedi conferma/recap", vedi ROADMAP.md); nuovo tool `remember_fact`; trappole
+di test aggiunte per Tappa 4: il modello non deve chiamare `remember_fact` su informazioni
+menzionate senza intento esplicito, e deve trovare un fatto salvato anche quando sepolto da molti
+chunk di mail più simili testualmente.
+
+---
+
+## 2026-07-15 — Connettori multi-provider: contratti agnostici dal fornitore da subito, secondo fornitore solo dopo validazione del primo
+
+**Contesto**: progettando il connettore Calendar (Tappa 4), è emerso che Eidos dovrà in futuro
+supportare anche Outlook/Microsoft 365 (calendario e, potenzialmente, mail) oltre a Google. La
+tentazione era costruire subito il supporto multi-provider per Calendar (secondo OAuth Microsoft,
+secondo client Graph API) prima ancora che il connettore Google Calendar fosse validato
+end-to-end con uso reale — stesso errore metodologico che ha causato il reboot di Eidos v1
+(ampiezza prima di validazione).
+
+**Decisione**: per ogni connettore che potrebbe realisticamente avere più fornitori (mail,
+calendario, storage, ecc.): si implementa **un solo fornitore alla volta**, validato end-to-end
+(incluso STOP 2 con uso reale) prima di aggiungerne un secondo. L'unico accorgimento preso in
+anticipo, a costo quasi zero: i contratti dei tool esposti al modello (nomi tool, forma di
+parametri/risultati) restano **agnostici dal fornitore** fin dalla prima implementazione (es.
+`search_events`, non `search_google_events`), così un secondo fornitore si aggiunge come nuovo
+client + smistamento interno per `provider`, senza dover cambiare l'interfaccia che il modello ha
+già imparato a usare. La tabella credenziali OAuth (`oauth_credenziali`, colonna `provider`) è già
+generica per questo dalla Tappa 2. Applicato ora a Calendar (Google prima, Outlook dopo
+validazione); Gmail (Tappa 2, già validato) **non viene toccato retroattivamente** — nessun
+secondo fornitore mail in costruzione ora, nessuna necessità funzionale per rinominare codice già
+validato (stesso principio della voce "Autorizzazioni" del 14/7).
+
+**Alternative considerate**: costruire subito Outlook insieme a Google Calendar — scartata,
+raddoppia il rischio prima di validare il primo; rifattorizzare Gmail ora per coerenza di naming —
+scartata, nessun secondo fornitore mail reale in vista, tocca codice già validato senza necessità
+funzionale.
+
+**Conseguenze**: playbook/connettori.md aggiornato con la checklist operativa corrispondente;
+quando (e se) arriverà un secondo fornitore mail reale, Gmail seguirà lo stesso trattamento
+riservato ora a Calendar (rinominare tool/contratti in modo agnostico prima di aggiungere il
+client del nuovo fornitore), non prima.

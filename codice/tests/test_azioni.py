@@ -3,7 +3,7 @@ conferma esplicita, e la conferma deve restare scoped al tenant giusto."""
 import httpx
 import pytest
 
-from orchestratore import azioni, gmail_client
+from orchestratore import azioni, calendar_client, gmail_client
 
 SUPABASE_URL = "https://fake.supabase.co"
 TENANT_A = "11111111-1111-1111-1111-111111111111"
@@ -178,6 +178,73 @@ async def test_conferma_send_draft_chiama_invia_bozza(respx_mock, monkeypatch):
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiamate == ["draft-1"]
+
+
+@pytest.mark.asyncio
+async def test_conferma_create_event_chiama_crea_evento(respx_mock, monkeypatch):
+    payload = {"titolo": "Riunione", "inizio": "2026-07-20T10:00:00Z", "fine": "2026-07-20T11:00:00Z", "partecipanti": ["cliente@example.com"]}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_CREATE_EVENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_crea_evento(access_token, **kwargs):
+        chiamate.append(kwargs["titolo"])
+        return {"id": "evt-1"}
+
+    monkeypatch.setattr(calendar_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(calendar_client, "crea_evento", fake_crea_evento)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamate == ["Riunione"]
+
+
+@pytest.mark.asyncio
+async def test_conferma_delete_event_chiama_elimina_evento_con_notifica(respx_mock, monkeypatch):
+    payload = {"event_id": "evt-1", "notifica": True, "calendario": None}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_DELETE_EVENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_elimina(access_token, event_id, *, notifica, calendario=None):
+        chiamate.append((event_id, notifica))
+
+    monkeypatch.setattr(calendar_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(calendar_client, "elimina_evento", fake_elimina)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamate == [("evt-1", True)]
+
+
+@pytest.mark.asyncio
+async def test_conferma_no_su_create_event_non_crea_nulla(respx_mock, monkeypatch):
+    payload = {"titolo": "Riunione", "inizio": "x", "fine": "y", "partecipanti": ["cliente@example.com"]}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_CREATE_EVENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamato = False
+
+    async def fake_crea_evento(*args, **kwargs):
+        nonlocal chiamato
+        chiamato = True
+
+    monkeypatch.setattr(calendar_client, "crea_evento", fake_crea_evento)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=False)
+
+    assert risultato["stato"] == azioni.STATO_RIFIUTATA
+    assert chiamato is False
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,15 @@
 - Verificare se il Claude Agent SDK offre già qualcosa nativamente per il pattern che serve
   (streaming, sessioni, ecc.) prima di costruirlo a mano — vedi CLAUDE.md, sezione
   "Verifica delle capacità del Claude Agent SDK".
+- Se la capacità potrebbe avere più fornitori in futuro (mail: Gmail oggi, Outlook Mail domani;
+  calendario: Google oggi, Outlook Calendar domani) — un solo fornitore alla volta, validato
+  end-to-end (STOP 2 incluso) prima di aggiungerne un secondo. Unico accorgimento preso in
+  anticipo, a costo quasi zero: contratti dei tool esposti al modello (nomi, forma di
+  parametri/risultati) agnostici dal fornitore fin dalla prima implementazione (es.
+  `search_events`, non `search_google_events`) — il secondo fornitore si aggiunge come nuovo
+  client + smistamento interno per `provider`, senza toccare l'interfaccia già imparata dal
+  modello. Non rifattorizzare un connettore già validato "per coerenza" senza un secondo
+  fornitore reale davanti. Vedi DECISIONS.md 2026-07-15, "Connettori multi-provider".
 
 ## 1. Struttura del codice (pattern Gmail)
 
