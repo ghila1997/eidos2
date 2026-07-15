@@ -5,6 +5,8 @@ decisione "Orchestratore server-side").
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from claude_agent_sdk import ClaudeAgentOptions, ProcessError, ResultMessage, query
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -29,7 +31,17 @@ class ConfermaRequest(BaseModel):
 
 
 def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
+    """Trappola reale trovata testando a mano (2026-07-15): senza la data
+    corrente iniettata qui, il modello indovina "oggi" (sbagliando anche di
+    un giorno) - critico per un assistente che ragiona su "domani",
+    "questa settimana", ecc. Calcolata a ogni richiesta, non in cache."""
+    ora_corrente = datetime.now(timezone.utc).strftime("%A %d %B %Y, %H:%M UTC")
     base = (
+        f"Data e ora attuali: {ora_corrente} (usa questo come riferimento "
+        "per 'oggi'/'domani'/'questa settimana' - non indovinare la data "
+        "da altre fonti, es. timestamp visti in risposte di tool precedenti. "
+        "Se non specificato altrimenti, assumi che il founder sia nel fuso "
+        "orario Europe/Rome.)\n\n"
         "Sei l'assistente operativo del founder. Usa i tool disponibili per "
         "cercare nelle mail importate, gestire il calendario, e preparare "
         "bozze/invii/inviti (che restano in attesa di conferma umana "

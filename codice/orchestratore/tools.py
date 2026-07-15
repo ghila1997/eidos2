@@ -28,7 +28,7 @@ basso rischio: eseguono subito, nessun gate (vedi DECISIONS.md 2026-07-15,
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -46,6 +46,18 @@ def _testo(contenuto: str) -> dict:
 
 def _slug_entity(nome: str) -> str:
     return "_".join(nome.strip().lower().split())
+
+
+def _fine_default(inizio: str, tutto_il_giorno: bool) -> str:
+    """Se l'utente non specifica l'orario di fine, default 1 ora dopo
+    l'inizio (o l'intera giornata se tutto_il_giorno) - stessa convenzione
+    di Google Calendar stesso, non richiede sempre una domanda di
+    chiarimento al founder."""
+    if tutto_il_giorno:
+        giorno = date.fromisoformat(inizio)
+        return (giorno + timedelta(days=1)).isoformat()
+    inizio_dt = datetime.fromisoformat(inizio.replace("Z", "+00:00"))
+    return (inizio_dt + timedelta(hours=1)).isoformat()
 
 
 async def _autorizza(tenant_id: str, nome_tool: str, categoria: str, **contesto_extra) -> dict | None:
@@ -191,7 +203,7 @@ async def _respond_to_invite(tenant_id: str, event_id: str, risposta: str, calen
 # --- Calendario: scrittura (gate condizionale sui partecipanti) -----------
 
 async def _create_event(
-    tenant_id: str, titolo: str, inizio: str, fine: str, fuso_orario: str = "UTC",
+    tenant_id: str, titolo: str, inizio: str, fine: str | None = None, fuso_orario: str = "UTC",
     tutto_il_giorno: bool = False, descrizione: str | None = None, luogo: str | None = None,
     partecipanti: list[str] | None = None, promemoria_minuti: list[int] | None = None,
     ricorrenza: str | None = None, videochiamata: bool = False, occupato: bool | None = None,
@@ -200,6 +212,9 @@ async def _create_event(
     categoria = supervisor.CATEGORIA_DISTRUTTIVA if partecipanti else supervisor.CATEGORIA_IMMEDIATA
     if rifiuto := await _autorizza(tenant_id, "create_event", categoria):
         return f"Azione non consentita: {rifiuto['message']}"
+
+    if fine is None:
+        fine = _fine_default(inizio, tutto_il_giorno)
 
     payload = dict(
         titolo=titolo, inizio=inizio, fine=fine, fuso_orario=fuso_orario,
@@ -739,7 +754,7 @@ def crea_server(tenant_id: str):
     _CAMPI_EVENTO_SCHEMA = {
         "titolo": {"type": "string"},
         "inizio": {"type": "string", "description": "RFC3339 (dateTime) o YYYY-MM-DD se tutto_il_giorno"},
-        "fine": {"type": "string"},
+        "fine": {"type": "string", "description": "Se omesso in create_event: default 1 ora dopo inizio (o l'intera giornata se tutto_il_giorno)"},
         "fuso_orario": {"type": "string", "description": "es. Europe/Rome (default UTC)"},
         "tutto_il_giorno": {"type": "boolean"},
         "descrizione": {"type": "string"},
@@ -756,20 +771,23 @@ def crea_server(tenant_id: str):
     @tool(
         "create_event",
         (
-            "Crea un evento di calendario. Senza partecipanti è immediato "
-            "(evento privato, nessuna notifica esterna). Con partecipanti "
-            "NON crea subito: crea un'azione in attesa di conferma umana "
-            "esplicita, perché Google invierebbe inviti reali via email."
+            "Crea un evento di calendario. Se ometti 'fine', dura 1 ora di "
+            "default (o l'intera giornata se tutto_il_giorno) - non serve "
+            "chiedere sempre l'orario di fine. Senza partecipanti è "
+            "immediato (evento privato, nessuna notifica esterna). Con "
+            "partecipanti NON crea subito: crea un'azione in attesa di "
+            "conferma umana esplicita, perché Google invierebbe inviti "
+            "reali via email."
         ),
         {
             "type": "object",
             "properties": _CAMPI_EVENTO_SCHEMA,
-            "required": ["titolo", "inizio", "fine"],
+            "required": ["titolo", "inizio"],
         },
     )
     async def create_event(args: dict) -> dict:
         return _testo(await _create_event(
-            tenant_id, args["titolo"], args["inizio"], args["fine"],
+            tenant_id, args["titolo"], args["inizio"], args.get("fine"),
             fuso_orario=args.get("fuso_orario", "UTC"), tutto_il_giorno=args.get("tutto_il_giorno", False),
             descrizione=args.get("descrizione"), luogo=args.get("luogo"),
             partecipanti=args.get("partecipanti"), promemoria_minuti=args.get("promemoria_minuti"),

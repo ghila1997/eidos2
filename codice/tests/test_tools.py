@@ -375,6 +375,39 @@ async def test_remember_fact_seconda_volta_accumula_non_sovrascrive(monkeypatch)
     assert eliminati == ["doc-1"]
 
 
+def test_fine_default_un_ora_dopo_inizio():
+    from orchestratore.tools import _fine_default
+
+    assert _fine_default("2026-07-20T10:00:00Z", False) == "2026-07-20T11:00:00+00:00"
+
+
+def test_fine_default_tutto_il_giorno_giorno_successivo():
+    from orchestratore.tools import _fine_default
+
+    assert _fine_default("2026-07-20", True) == "2026-07-21"
+
+
+@pytest.mark.asyncio
+async def test_create_event_senza_fine_usa_default_un_ora(monkeypatch):
+    from orchestratore import calendar_client
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    chiamate = {}
+
+    async def fake_crea_evento(access_token, **kwargs):
+        chiamate.update(kwargs)
+        return {"event_id": "evt-1", "titolo": kwargs["titolo"]}
+
+    monkeypatch.setattr(calendar_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(calendar_client, "crea_evento", fake_crea_evento)
+
+    await tools._create_event(TENANT, "Call veloce", "2026-07-20T10:00:00Z")
+
+    assert chiamate["fine"] == "2026-07-20T11:00:00+00:00"
+
+
 @pytest.mark.asyncio
 async def test_create_event_senza_partecipanti_esegue_subito(monkeypatch):
     from orchestratore import calendar_client, azioni
