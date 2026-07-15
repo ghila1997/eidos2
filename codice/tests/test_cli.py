@@ -1,7 +1,7 @@
 """Trappola trovata testando Tappa 4 a mano: _mostra_conferma assumeva
 payload sempre di forma Gmail (destinatario/oggetto/corpo) e andava in
 KeyError su un'azione pending di tipo Calendar (titolo/event_id/...)."""
-from cli import _descrivi_azione
+from cli import _descrivi_azione, _interpreta_risposta
 
 
 def test_descrivi_azione_send_email():
@@ -33,3 +33,21 @@ def test_descrivi_azione_delete_event_non_solleva_keyerror():
 def test_descrivi_azione_tipo_sconosciuto_non_esplode():
     azione = {"tipo": "qualcosa_di_nuovo", "payload": {"x": 1}}
     assert "qualcosa_di_nuovo" in _descrivi_azione(azione)
+
+
+def test_interpreta_risposta_affermative():
+    for testo in ("y", "si", "Sì", "CONFERMO", "vai", " ok ", "Autorizzo"):
+        assert _interpreta_risposta(testo) is True
+
+
+def test_interpreta_risposta_negative():
+    for testo in ("n", "No", "annulla", "FERMATI", "stop"):
+        assert _interpreta_risposta(testo) is False
+
+
+def test_interpreta_risposta_non_riconosciuta_ritorna_none():
+    """Trappola: una frase ambigua non deve mai essere interpretata a caso
+    come sì o no - il chiamante deve richiedere di nuovo, mai indovinare."""
+    assert _interpreta_risposta("forse") is None
+    assert _interpreta_risposta("") is None
+    assert _interpreta_risposta("ciao Eidos") is None

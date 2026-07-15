@@ -83,13 +83,31 @@ def _mostra_conferma(azione: dict) -> None:
     print(f"\n[Conferma richiesta] {_descrivi_azione(azione)}\n")
 
 
+_RISPOSTE_AFFERMATIVE = {"y", "si", "sì", "confermo", "vai", "ok", "autorizzo"}
+_RISPOSTE_NEGATIVE = {"n", "no", "annulla", "fermati", "stop"}
+
+
+def _interpreta_risposta(testo: str) -> bool | None:
+    """Elenco chiuso di frasi accettate, confronto deterministico (non
+    interpretazione del modello) - stesso principio di sicurezza di un
+    semplice y/n, solo meno rigido. Le frasi vocali (wake-phrase, gestione
+    ambiguità da voce) restano fuori: competenza di Tappa 6 (Voce), non di
+    qui - vedi CLAUDE.md, "testo prima, voce dopo". None = non riconosciuta."""
+    testo = testo.strip().lower()
+    if testo in _RISPOSTE_AFFERMATIVE:
+        return True
+    if testo in _RISPOSTE_NEGATIVE:
+        return False
+    return None
+
+
 def _chiedi_conferma(client: httpx.Client, azione_id: str) -> None:
     while True:
-        risposta = input("Confermi? [y/n]: ").strip().lower()
-        if risposta in ("y", "n"):
+        conferma = _interpreta_risposta(input("Confermi? [sì/no]: "))
+        if conferma is not None:
             break
-        print("Rispondi 'y' o 'n'.")
-    resp = client.post(f"/azioni/{azione_id}/conferma", json={"conferma": risposta == "y"})
+        print("Rispondi con un sì o un no chiaro (es. 'sì', 'confermo', 'no', 'annulla').")
+    resp = client.post(f"/azioni/{azione_id}/conferma", json={"conferma": conferma})
     if resp.status_code != 200:
         print(f"Errore nella conferma ({resp.status_code}): {resp.text}")
         return
