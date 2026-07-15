@@ -530,6 +530,30 @@ async def test_respond_to_invite_esegue_subito_senza_conferma(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_events_errore_calendar_viene_segnalato_non_nascosto(monkeypatch):
+    """Trappola reale trovata testando a mano (2026-07-15, scope
+    calendarList insufficiente): un errore dell'API non deve mai tradursi
+    in una risposta silenziosa 'nessun evento trovato' - il modello deve
+    poter dire che ha avuto un problema, non rispondere con sicurezza
+    sbagliata."""
+    from orchestratore import calendar_client
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cerca(access_token, query=None, date_from=None, date_to=None):
+        raise calendar_client.CalendarError("Calendar calendarList.list fallita: 403")
+
+    monkeypatch.setattr(calendar_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(calendar_client, "cerca_eventi", fake_cerca)
+
+    risultato = await tools._search_events(TENANT, query="dermatologo")
+
+    assert "Errore" in risultato
+    assert "nessun evento" not in risultato.lower()
+
+
+@pytest.mark.asyncio
 async def test_check_availability_sola_lettura(monkeypatch):
     from orchestratore import calendar_client
 

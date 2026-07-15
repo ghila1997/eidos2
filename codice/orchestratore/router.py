@@ -45,7 +45,11 @@ def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
         "Usa remember_fact SOLO quando l'utente esprime esplicitamente "
         "l'intenzione di far ricordare qualcosa (es. 'ricorda che...', "
         "'prendi nota', 'segna che devo...'). Non salvare mai automaticamente "
-        "informazioni menzionate di passaggio in una conversazione normale."
+        "informazioni menzionate di passaggio in una conversazione normale.\n\n"
+        "Se un tool restituisce un messaggio di errore, dillo esplicitamente "
+        "all'utente (es. 'ho avuto un problema a controllare il calendario') "
+        "- non rispondere mai come se avessi verificato con successo quando "
+        "in realtà la chiamata è fallita."
     )
     if not preferenze:
         return base

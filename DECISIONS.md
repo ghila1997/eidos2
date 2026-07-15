@@ -671,3 +671,47 @@ funzionale.
 quando (e se) arriverà un secondo fornitore mail reale, Gmail seguirà lo stesso trattamento
 riservato ora a Calendar (rinominare tool/contratti in modo agnostico prima di aggiungere il
 client del nuovo fornitore), non prima.
+
+---
+
+## 2026-07-15 — Verifica reale di Calendar: scope `calendar.events` insufficiente per `calendarList.list`
+
+**Contesto**: a STOP 2 di Tappa 4, primo test reale con dati veri (un impegno vero sul calendario
+del founder), `search_events` ha risposto "nessun evento trovato" per un giorno con un impegno
+reale confermato dal founder - risposta sbagliata data con sicurezza, non un errore visibile.
+Causa verificata sulla doc ufficiale Google (non a naso, vedi CLAUDE.md "Verifica delle
+capacità"): lo scope OAuth `calendar.events` (unico scope richiesto in fase di design) copre
+lettura/scrittura eventi ma **non** l'endpoint `calendarList.list`, usato da `cerca_eventi` per
+elencare tutti i calendari del founder (lettura multi-calendario, decisione già presa il
+2026-07-15 in "Tappa 4: Memoria"). La chiamata falliva con 403, ma il tool non gestiva
+`CalendarError` esplicitamente: l'eccezione veniva assorbita a monte (SDK/agente) e il modello
+rispondeva come se avesse controllato con successo, invece di segnalare l'errore.
+
+**Decisione**: aggiunto scope `calendar.calendarlist.readonly` (sola lettura, coerente con l'uso
+- solo leggere l'elenco, non gestirlo) accanto a `calendar.events` in `oauth_calendar.py`. Tutti
+i 6 tool calendario in `tools.py` ora catturano esplicitamente `CalendarError` e restituiscono un
+messaggio di errore leggibile invece di lasciar propagare l'eccezione; system prompt aggiornato
+con un'istruzione esplicita: se un tool restituisce un errore, dirlo all'utente, mai rispondere
+come se la verifica fosse riuscita. Il founder deve ridare il consenso OAuth (nuovo scope,
+incrementale) - stesso pattern già visto per Gmail quando lo scope è cambiato (DECISIONS.md
+2026-07-14, "Connettori: criterio di completezza").
+
+**Perché non l'ha preso un test automatico**: i test mockano `calendar_client`, verificano che la
+logica del codice sia corretta (gate, dedup, isolamento tenant) - non possono sapere se uno scope
+OAuth scelto in fase di design copre davvero l'endpoint chiamato, perché il mock non parla mai
+con Google per davvero. Stessa lezione già scritta per Gmail ("Verifica reale di reply_email":
+"i mock verificano che il codice giri, non che il comportamento osservato dal destinatario reale
+sia corretto") - qui si applica a uno scope invece che a un comportamento di threading, ma il
+principio è identico: una capacità rischiosa/esterna va verificata contro l'account vero prima di
+dichiararla finita (vedi playbook/connettori.md, punto 4), non solo con mock.
+
+**Alternative considerate**: usare lo scope pieno `calendar` (include calendarList senza bisogno
+di un secondo scope) - scartata, più ampio del necessario (include anche gestione/creazione di
+calendari, non richiesta da nessun tool costruito); ignorare l'errore e limitare la lettura al
+solo calendario primario - scartata, vanificherebbe la decisione già presa di leggere su tutti i
+calendari per non dare risposte di disponibilità sbagliate.
+
+**Conseguenze**: nessun impatto sullo schema o sui tool esposti al modello (stessi nomi/firme);
+il founder ripete il consenso OAuth Calendar una volta; pattern "cattura CalendarError nei tool,
+mai lasciarla propagare silenziosamente" da riusare per ogni prossimo tool che parla con un'API
+esterna (Outlook quando arriverà, ecc.).

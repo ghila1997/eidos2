@@ -51,17 +51,41 @@ def _assicura_sessione(client: httpx.Client) -> None:
     _login(client)
 
 
-def _mostra_conferma(azione: dict) -> None:
+def _descrivi_azione(azione: dict) -> str:
+    """Un'azione pending può essere di tipo Gmail o Calendar (Tappa 4),
+    payload diversi tra loro - niente di comune da assumere oltre a `tipo`."""
+    tipo = azione["tipo"]
     payload = azione["payload"]
-    print(
-        f"\n[Conferma richiesta] invio a {payload['destinatario']}, "
-        f"oggetto '{payload['oggetto']}':\n{payload['corpo']}\n"
-    )
+    if tipo == "send_email":
+        return f"invio a {payload['destinatario']}, oggetto '{payload['oggetto']}':\n{payload['corpo']}"
+    if tipo == "reply_email":
+        return f"risposta al messaggio {payload['message_id']}:\n{payload['corpo']}"
+    if tipo == "forward_email":
+        return f"inoltro del messaggio {payload['message_id']} a {payload['destinatario']}"
+    if tipo == "send_draft":
+        return f"invio della bozza {payload['draft_id']}"
+    if tipo == "trash_email":
+        return f"spostamento nel cestino del messaggio {payload['message_id']}"
+    if tipo == "create_event":
+        partecipanti = ", ".join(payload.get("partecipanti") or [])
+        return (
+            f"creazione evento '{payload['titolo']}' ({payload['inizio']} - {payload['fine']}), "
+            f"partecipanti: {partecipanti}"
+        )
+    if tipo == "update_event":
+        return f"modifica dell'evento {payload['event_id']}"
+    if tipo == "delete_event":
+        return f"cancellazione dell'evento {payload['event_id']}"
+    return f"azione di tipo '{tipo}': {payload}"
+
+
+def _mostra_conferma(azione: dict) -> None:
+    print(f"\n[Conferma richiesta] {_descrivi_azione(azione)}\n")
 
 
 def _chiedi_conferma(client: httpx.Client, azione_id: str) -> None:
     while True:
-        risposta = input("Confermi l'invio? [y/n]: ").strip().lower()
+        risposta = input("Confermi? [y/n]: ").strip().lower()
         if risposta in ("y", "n"):
             break
         print("Rispondi 'y' o 'n'.")
@@ -71,9 +95,9 @@ def _chiedi_conferma(client: httpx.Client, azione_id: str) -> None:
         return
     stato = resp.json()["stato"]
     if stato == "confermata_inviata":
-        print("Email inviata.\n")
+        print("Fatto.\n")
     elif stato == "rifiutata":
-        print("Invio annullato.\n")
+        print("Azione annullata.\n")
     else:
         print(f"Stato azione: {stato}\n")
 
@@ -100,6 +124,7 @@ def main() -> None:
                     dettaglio = resp.json()["detail"]
                     azione_in_attesa = {
                         "id": dettaglio["azione_id"],
+                        "tipo": dettaglio["tipo"],
                         "payload": dettaglio["payload"],
                     }
                     _mostra_conferma(azione_in_attesa)

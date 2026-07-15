@@ -138,10 +138,18 @@ async def _remember_fact(tenant_id: str, nome: str, nota: str, tipo: str = "pers
 async def _search_events(
     tenant_id: str, query: str | None = None, date_from: str | None = None, date_to: str | None = None,
 ) -> str:
+    """Trappola reale trovata testando a mano (2026-07-15): una CalendarError
+    non gestita qui lasciava il modello libero di rispondere "nessun evento"
+    con sicurezza invece di segnalare l'errore - ora l'errore arriva
+    esplicito nel testo restituito, il modello non può fingere di aver
+    controllato quando in realtà la chiamata è fallita."""
     if rifiuto := await _autorizza(tenant_id, "search_events", supervisor.CATEGORIA_IMMEDIATA):
         return f"Azione non consentita: {rifiuto['message']}"
-    access_token = await calendar_client.ottieni_access_token(tenant_id)
-    eventi = await calendar_client.cerca_eventi(access_token, query=query, date_from=date_from, date_to=date_to)
+    try:
+        access_token = await calendar_client.ottieni_access_token(tenant_id)
+        eventi = await calendar_client.cerca_eventi(access_token, query=query, date_from=date_from, date_to=date_to)
+    except calendar_client.CalendarError as exc:
+        return f"Errore nel controllare il calendario, riprova o segnalalo: {exc}"
     if not eventi:
         return "Nessun evento trovato."
     righe = []
@@ -154,8 +162,11 @@ async def _search_events(
 async def _check_availability(tenant_id: str, persone: list[str], date_from: str, date_to: str) -> str:
     if rifiuto := await _autorizza(tenant_id, "check_availability", supervisor.CATEGORIA_IMMEDIATA):
         return f"Azione non consentita: {rifiuto['message']}"
-    access_token = await calendar_client.ottieni_access_token(tenant_id)
-    occupato = await calendar_client.controlla_disponibilita(access_token, persone, date_from, date_to)
+    try:
+        access_token = await calendar_client.ottieni_access_token(tenant_id)
+        occupato = await calendar_client.controlla_disponibilita(access_token, persone, date_from, date_to)
+    except calendar_client.CalendarError as exc:
+        return f"Errore nel controllare la disponibilità, riprova o segnalalo: {exc}"
     righe = []
     for email, slot in occupato.items():
         if not slot:
@@ -169,8 +180,11 @@ async def _check_availability(tenant_id: str, persone: list[str], date_from: str
 async def _respond_to_invite(tenant_id: str, event_id: str, risposta: str, calendario: str | None = None) -> str:
     if rifiuto := await _autorizza(tenant_id, "respond_to_invite", supervisor.CATEGORIA_IMMEDIATA):
         return f"Azione non consentita: {rifiuto['message']}"
-    access_token = await calendar_client.ottieni_access_token(tenant_id)
-    evento = await calendar_client.rispondi_invito(access_token, event_id, risposta, calendario=calendario)
+    try:
+        access_token = await calendar_client.ottieni_access_token(tenant_id)
+        evento = await calendar_client.rispondi_invito(access_token, event_id, risposta, calendario=calendario)
+    except calendar_client.CalendarError as exc:
+        return f"Errore nel rispondere all'invito, riprova o segnalalo: {exc}"
     return f"Risposta '{risposta}' registrata per l'evento '{evento['titolo']}'."
 
 
@@ -195,8 +209,11 @@ async def _create_event(
         colore=colore, calendario=calendario,
     )
     if not partecipanti:
-        access_token = await calendar_client.ottieni_access_token(tenant_id)
-        evento = await calendar_client.crea_evento(access_token, **payload)
+        try:
+            access_token = await calendar_client.ottieni_access_token(tenant_id)
+            evento = await calendar_client.crea_evento(access_token, **payload)
+        except calendar_client.CalendarError as exc:
+            return f"Errore nel creare l'evento, riprova o segnalalo: {exc}"
         return f"Evento creato (id {evento['event_id']}): {titolo}."
 
     azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_CREATE_EVENT, payload)
@@ -215,12 +232,15 @@ async def _update_event(
     ricorrenza: str | None = None, videochiamata: bool = False, occupato: bool | None = None,
     colore: str | None = None,
 ) -> str:
-    access_token = await calendar_client.ottieni_access_token(tenant_id)
-    if partecipanti is not None:
-        ha_partecipanti = bool(partecipanti)
-    else:
-        evento_attuale = await calendar_client.ottieni_evento(access_token, event_id, calendario=calendario)
-        ha_partecipanti = bool(evento_attuale["partecipanti"])
+    try:
+        access_token = await calendar_client.ottieni_access_token(tenant_id)
+        if partecipanti is not None:
+            ha_partecipanti = bool(partecipanti)
+        else:
+            evento_attuale = await calendar_client.ottieni_evento(access_token, event_id, calendario=calendario)
+            ha_partecipanti = bool(evento_attuale["partecipanti"])
+    except calendar_client.CalendarError as exc:
+        return f"Errore nel leggere l'evento da modificare, riprova o segnalalo: {exc}"
 
     categoria = supervisor.CATEGORIA_DISTRUTTIVA if ha_partecipanti else supervisor.CATEGORIA_IMMEDIATA
     if rifiuto := await _autorizza(tenant_id, "update_event", categoria):
@@ -233,9 +253,12 @@ async def _update_event(
         ricorrenza=ricorrenza, videochiamata=videochiamata, occupato=occupato, colore=colore,
     )
     if not ha_partecipanti:
-        evento = await calendar_client.aggiorna_evento(
-            access_token, event_id, notifica=False, calendario=calendario, **campi
-        )
+        try:
+            evento = await calendar_client.aggiorna_evento(
+                access_token, event_id, notifica=False, calendario=calendario, **campi
+            )
+        except calendar_client.CalendarError as exc:
+            return f"Errore nell'aggiornare l'evento, riprova o segnalalo: {exc}"
         return f"Evento aggiornato: {evento['titolo']}."
 
     payload = {"event_id": event_id, "notifica": True, "calendario": calendario, **campi}
@@ -247,8 +270,11 @@ async def _update_event(
 
 
 async def _delete_event(tenant_id: str, event_id: str, calendario: str | None = None) -> str:
-    access_token = await calendar_client.ottieni_access_token(tenant_id)
-    evento_attuale = await calendar_client.ottieni_evento(access_token, event_id, calendario=calendario)
+    try:
+        access_token = await calendar_client.ottieni_access_token(tenant_id)
+        evento_attuale = await calendar_client.ottieni_evento(access_token, event_id, calendario=calendario)
+    except calendar_client.CalendarError as exc:
+        return f"Errore nel leggere l'evento da cancellare, riprova o segnalalo: {exc}"
     ha_partecipanti = bool(evento_attuale["partecipanti"])
 
     categoria = supervisor.CATEGORIA_DISTRUTTIVA if ha_partecipanti else supervisor.CATEGORIA_IMMEDIATA
@@ -256,7 +282,10 @@ async def _delete_event(tenant_id: str, event_id: str, calendario: str | None = 
         return f"Azione non consentita: {rifiuto['message']}"
 
     if not ha_partecipanti:
-        await calendar_client.elimina_evento(access_token, event_id, notifica=False, calendario=calendario)
+        try:
+            await calendar_client.elimina_evento(access_token, event_id, notifica=False, calendario=calendario)
+        except calendar_client.CalendarError as exc:
+            return f"Errore nel cancellare l'evento, riprova o segnalalo: {exc}"
         return f"Evento '{evento_attuale['titolo']}' eliminato."
 
     azione_id = await azioni.crea_azione_pending(
