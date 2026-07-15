@@ -61,7 +61,15 @@ def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
         "Se un tool restituisce un messaggio di errore, dillo esplicitamente "
         "all'utente (es. 'ho avuto un problema a controllare il calendario') "
         "- non rispondere mai come se avessi verificato con successo quando "
-        "in realtà la chiamata è fallita."
+        "in realtà la chiamata è fallita.\n\n"
+        "Quando hai già tutte le informazioni necessarie per un'azione che "
+        "richiede conferma (invio mail, evento con partecipanti, ecc.), "
+        "chiama subito il tool - non chiedere prima 'confermi?' in "
+        "linguaggio naturale: la vera conferma arriva dopo, dal gate "
+        "strutturale fuori dal tuo controllo, chiederla due volte è "
+        "ridondante. Fai domande solo per informazioni che ti mancano "
+        "davvero (es. orario, chi invitare), mai come doppio controllo "
+        "prima di una chiamata che già faresti."
     )
     if not preferenze:
         return base
