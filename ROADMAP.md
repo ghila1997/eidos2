@@ -82,16 +82,19 @@
   verificato 2026-07-15 (scrittura con conferma, lettura immediata, blocco fuori perimetro senza
   conferma), vedi DECISIONS.md e [docs/agente_locale/README.md](docs/agente_locale/README.md)
 
-## Tappa 4 — Connettori Cloud (oltre email)
+## Tappa 4 — Connettori Cloud (oltre email) — 🔶 Google Calendar fatto (2026-07-16), Storage/Drive e Suite Microsoft restano
 
 - Calendario, storage cloud; OAuth gestito per singola capacità, non per fornitore in blocco
-- **Pulizia rimandata da Tappa 2**: `codice/orchestratore/oauth.py` oggi mescola la parte
-  generica (cifra/salva/rinnova credenziali per `tenant_id`+`provider`, già riusabile) con
-  costanti specifiche di Google/Gmail (`GMAIL_SCOPES`, URL). Con l'arrivo del secondo provider
-  OAuth (Calendar), separare le due parti per non far trascinare a Calendar/Storage la parte
-  Gmail-specifica — non fatto in Tappa 2/3 perché con un solo provider la mescolanza non causa
-  ancora danno reale (vedi DECISIONS.md, decisione di non anticipare questo refactor)
-- **Finito quando**: il founder crea/legge un evento di calendario reale tramite l'assistente
+- **Pulizia rimandata da Tappa 2 — fatta**: `codice/orchestratore/oauth.py` mescolava la parte
+  generica (cifra/salva/rinnova credenziali per `tenant_id`+`provider`) con costanti
+  Gmail-specifiche. Split in `oauth_core.py` (generico) + `oauth.py`/`oauth_calendar.py` (per
+  provider) all'arrivo di Calendar, nessuna regressione su Gmail (vedi DECISIONS.md)
+- **Finito quando**: il founder crea/legge un evento di calendario reale tramite l'assistente —
+  ✅ verificato 2026-07-16 (ricerca, creazione con/senza partecipanti con gate rispettato,
+  cancellazione, disponibilità, import di 190 eventi storici in Memoria), sei bug reali trovati
+  e corretti durante la verifica (scope OAuth incompleto, errori nascosti, data non nota al
+  modello, durata di default, doppia conferma ridondante, crash CLI su azioni Calendar — vedi
+  DECISIONS.md e [docs/orchestratore/README.md](docs/orchestratore/README.md))
 - **Suite Google ora, Suite Microsoft dopo**. Target imprenditori/PMI usa in modo diffuso
   entrambi gli ecosistemi (Google Workspace e Microsoft 365) — non è un'idea da valutare "se",
   è un candidato reale già riconosciuto. Ma si costruisce **una suite alla volta**, validata

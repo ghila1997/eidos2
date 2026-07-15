@@ -1,7 +1,7 @@
 # Eidos 2.0
 
 > Indice del progetto. Descrive lo stato attuale del sistema — non i piani.
-> Ultimo allineamento: 2026-07-14
+> Ultimo allineamento: 2026-07-16
 
 ## Cos'è
 
@@ -33,9 +33,9 @@ sottile ma vero end-to-end, si ispessisce un pezzo alla volta (dettagli in ROADM
 | Modulo | Responsabilità | Stato | Docs |
 |---|---|---|---|
 | Fondamenta | Autentica il founder (single-user) su Supabase, schema con `tenant_id` da subito. Ruoli/permessi granulari (Grant), audit log, dispositivi: Tappa 8 | costruito (v1 minima) | [docs/fondamenta/README.md](docs/fondamenta/README.md) |
-| Orchestratore | Agente conversazionale singolo (Claude Agent SDK), connettore Gmail completo (cerca/rispondi/inoltra/organizza/invia), Safety Supervisor (autorizzazione centralizzata per ogni tool call), decide azione diretta vs delega a subagente (non ancora servito) | costruito (v1, single-user) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
-| Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime, costruito), tabelle strutturate per fatti (schema pronto, vuoto finché l'agente non impara in conversazione), ricerca semantica (pgvector) su mail importate (costruito). Estrazione strutturata/indicizzazione documenti generici (inclusi file locali): Tappa 5 | costruito (v1, solo mail) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
-| Connettori Cloud | Email/calendario/storage/messaggistica/ricerca web, OAuth per singola capacità | pianificato | — |
+| Orchestratore | Agente conversazionale singolo (Claude Agent SDK), connettori Gmail e Google Calendar completi (cerca/rispondi/inoltra/organizza/invia mail; cerca/crea/modifica/cancella/rispondi a inviti/controlla disponibilità su calendario), Safety Supervisor (autorizzazione centralizzata per ogni tool call), decide azione diretta vs delega a subagente (non ancora servito) | costruito (v1, single-user) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
+| Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime, costruito), tabelle strutturate per fatti per entità (upsert, scrittura sempre esplicita via `remember_fact`, costruito), ricerca semantica (pgvector) unificata su mail importate + eventi calendario conclusi + fatti salvati (`search_memoria`, costruito). Estrazione strutturata/indicizzazione documenti generici (inclusi file locali): Tappa 5 | costruito (v1, mail+calendario+fatti) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
+| Connettori Cloud | Storage cloud, messaggistica, ricerca web (Google Calendar già costruito, vedi riga Orchestratore); Suite Microsoft (Outlook Mail/Calendar, OneDrive) dopo validazione della Suite Google | in parte pianificato | — |
 | Agente Locale | File/cartelle: leggere/scrivere/cercare/spostare/eliminare dentro un perimetro autorizzato, sessione locale separata dall'Orchestratore server-side. Terminale/browser: non ancora costruiti | costruito (v1, solo file) | [docs/agente_locale/README.md](docs/agente_locale/README.md) |
 | Voce | STT/TTS (da riprogettare da zero, nessuna decisione ereditata) | pianificato | — |
 | Interfaccia Utente | Riceve voce/testo, mostra risposte, log azioni, conferme | pianificato | — |
