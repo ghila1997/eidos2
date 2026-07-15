@@ -35,8 +35,12 @@ tramite chat).
   `send_email`, `reply_email`, `forward_email`, `send_draft`, `trash_email` (questi ultimi
   cinque creano un'azione pending, non eseguono subito), `mark_email`, `organize_email`,
   `list_labels`, `get_attachment` (immediati, reversibili)
+- `codice/orchestratore/safety/` — Safety Supervisor: punto unico di autorizzazione per ogni
+  tool call (nativo o custom), policy dichiarative in `policies.yaml`, audit log JSONL. Ogni
+  funzione tool lo chiama in testa invece di decidere da sé se serve conferma (vedi
+  DECISIONS.md, "Safety Supervisor: punto unico di autorizzazione per ogni tool call")
 - `codice/orchestratore/azioni.py` — azioni distruttive in attesa di conferma umana esplicita,
-  dispatch per tipo (`_ESECUTORI`)
+  dispatch per tipo (`_ESECUTORI`, firma `(tenant_id, payload)`)
 - `codice/orchestratore/gmail_client.py` — client Gmail completo (httpx puro): mail,
   reply/forward con threading corretto, modify, labels, allegati, drafts
 - `codice/orchestratore/oauth.py` — OAuth Google (scope `gmail.modify`+`gmail.labels`),
@@ -62,6 +66,7 @@ Test automatici: `codice/tests/test_tools.py`, `test_azioni.py`, `test_gmail_cli
 
 ## Decisioni rilevanti
 
+- DECISIONS.md — "Safety Supervisor: punto unico di autorizzazione per ogni tool call"
 - DECISIONS.md — "Memoria: un solo database, tre modi di ricordare, niente modulo RAG separato"
 - DECISIONS.md — "Deploy: Dockerfile esplicito invece di Nixpacks (richiesto dal Claude Agent SDK)"
 - DECISIONS.md — "Connettori: criterio di completezza 'cosa fa un umano', non 'tutta l'API'"

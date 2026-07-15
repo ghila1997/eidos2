@@ -491,3 +491,93 @@ cambia comportamento visibile, ma le sue funzioni tool andranno aggiornate per c
 Supervisor invece di if/else propri — piccola modifica meccanica, da fare come parte della
 costruzione di Tappa 3. Il design dettagliato del Safety Supervisor e di Agente Locale prosegue
 in `saas-module-builder`.
+
+---
+
+## 2026-07-14 — Agente Locale (Ciclo B): `Glob` escluso dai tool nativi, sostituito da `list_directory` custom
+
+**Contesto**: costruendo il Ciclo B di Tappa 3 (Agente Locale) sopra il Safety Supervisor già
+validato (vedi voce precedente), la verifica sulla documentazione ufficiale live del Claude Agent
+SDK (regola CLAUDE.md, "Verifica delle capacità del Claude Agent SDK") ha confermato la sintassi
+esatta di `ClaudeSDKClient`/hook `PreToolUse`, ma ha anche mostrato che il `tool_input` del tool
+nativo `Glob` espone solo `pattern`, nessun campo path esplicito - a differenza di `Read`/`Write`/
+`Edit` (`file_path`) e `Grep` (`paths`, lista). Il design approvato a STOP 1 includeva `Glob` tra i
+tool nativi abilitati per l'elenco cartelle.
+
+**Decisione**: `Glob` escluso dai tool nativi abilitati per Agente Locale. Il perimetro si applica
+validando path espliciti nel `tool_input`: senza un campo del genere, l'hook non avrebbe modo di
+verificare cosa `Glob` sta davvero enumerando (rischio di fail-open su un tool che elenca il
+filesystem). La stessa capacità (elencare una cartella) resta coperta da un nuovo tool custom
+`list_directory` (immediato, sola lettura, stesso pattern di verifica perimetro degli altri tool
+custom di `agente_locale/tools.py`), dove il path è sempre esplicito e verificabile. Stesso
+principio applicato a `Grep`: se il modello lo chiama senza `paths` esplicito, l'hook verifica la
+sola `cwd` della sessione (sempre una cartella del perimetro, mai un default non verificato).
+
+**Alternative considerate**: abilitare `Glob` comunque, fidandosi che operi solo sotto `cwd` per
+default - scartata, non verificato con certezza sulla documentazione e un'assunzione sbagliata qui
+avrebbe un costo alto (enumerazione di file fuori perimetro); bloccare `Glob` del tutto senza un
+sostituto - scartata, avrebbe tolto una capacità già validata a STOP 1 senza necessità, quando un
+tool custom equivalente costa poco.
+
+**Conseguenze**: tool nativi abilitati per Agente Locale: `Read`, `Write`, `Edit`, `Grep`. Tool
+custom MCP: `list_directory`, `move_file`, `delete_file`, `create_folder`. Micro-deviazione dal
+design di STOP 1 (che elencava `Glob`), segnalata qui invece di lasciarla silenziosa - nessun
+impatto sulla capacità finale offerta all'utente.
+
+---
+
+## 2026-07-15 — Agente Locale (Ciclo B): verifica reale, causa di un blocco apparente
+
+**Contesto**: primo test manuale a STOP 2 (`cli_locale.py` lanciato dal terminale integrato di
+VSCode): la sessione restava bloccata dopo il primo messaggio, senza errore visibile - sospettato
+inizialmente il rischio tecnico già annotato ("hook che blocca in modo sincrono in attesa di
+input"). Riprodotto con successo lanciando lo stesso comando con input pilotato (non interattivo):
+gate, conferma e scrittura reale funzionavano correttamente, escludendo un bug nella logica.
+Ripetuto poi dall'utente da un terminale Windows separato (non VSCode): stesso comando, stesso
+codice, funziona correttamente end-to-end (scrittura con conferma, lettura immediata, blocco fuori
+perimetro senza conferma).
+
+**Causa reale**: non il meccanismo di conferma sincrona (il rischio tecnico annotato in
+precedenza non si è verificato), ma l'ambiente del terminale integrato di VSCode/Claude Code, che
+eredita variabili d'ambiente dell'estensione (auth source per le connessioni claude.ai) e confonde
+il sottoprocesso CLI Node.js lanciato dall'SDK, portandolo a un `ConnectionRefused` invece di usare
+la sessione claude.ai già loggata sulla macchina.
+
+**Decisione**: capacità considerata verificata e funzionante. Nessuna modifica al meccanismo di
+conferma sincrona (confermato che funziona anche in un terminale interattivo reale, non solo con
+input pilotato). Registrata come trappola nota in `docs/agente_locale/README.md`: `cli_locale.py`
+va sempre lanciato da un terminale Windows separato, mai dal terminale integrato di VSCode.
+
+**Conseguenze**: nessuna azione di codice necessaria. Il "rischio tecnico aperto" annotato nella
+voce "Safety Supervisor" di questo file (conferma sincrona nell'hook) è chiuso: verificato che
+funziona, fallback ad `azioni_pending` non necessario.
+
+---
+
+## 2026-07-15 — Autenticazione Anthropic per i clienti: solo API key di Eidos, mai l'abbonamento personale del cliente
+
+**Contesto**: verificando perché `cli_locale.py` in locale funziona con il login claude.ai del
+founder (Pro, senza costo a consumo) invece che con una `ANTHROPIC_API_KEY`, l'utente ha chiesto se
+per i clienti reali si potesse collegare tutto tramite un eventuale abbonamento Claude posseduto
+dal cliente stesso, invece che tramite una `ANTHROPIC_API_KEY` di Eidos - varrebbe a dire meno costo
+a consumo per Eidos sui clienti che già pagano un abbonamento Claude proprio.
+
+**Decisione**: scartata. Per l'Orchestratore (server-side, Railway) non è tecnicamente praticabile -
+un abbonamento claude.ai è un login personale interattivo legato a macchina/sessione, non esiste un
+meccanismo per delegarlo a un processo backend remoto. Per Agente Locale (che gira davvero sul PC
+del cliente) sarebbe tecnicamente plausibile, ma resta un rischio di violazione dei termini di
+servizio di Anthropic non verificato (un abbonamento personale usato per alimentare le funzionalità
+di un SaaS di terzi a pagamento) - non decidibile per comodità implementativa senza leggere i termini
+reali. Anche se fosse permesso, risolverebbe il costo solo per il sottoinsieme di clienti che già
+paga un abbonamento Claude proprio, verosimilmente pochi nel pubblico PMI/freelance target (vedi
+PROJECT.md) - non sostituisce la soluzione generale già pianificata.
+
+**Alternative considerate**: abbonamento del cliente per Agente Locale (solo) - scartata per il
+rischio ToS non verificato più il beneficio limitato a un sottoinsieme di clienti.
+
+**Conseguenze**: nessun cambiamento alla roadmap - resta valida la Tappa 9 così come già descritta
+(Eidos usa una propria `ANTHROPIC_API_KEY`, il modulo Consumi misura l'uso per tenant, il prezzo
+dell'abbonamento flat deve coprire quel costo). Resta aperto, e va risolto quando si progetta la
+distribuzione reale di Agente Locale a un cliente non tecnico (vedi nota in
+`notes/idee-prodotto-eidos2.md`), come consegnare in modo sicuro l'`ANTHROPIC_API_KEY` di Eidos al
+processo locale sul PC del cliente senza che il cliente debba gestire credenziali Anthropic a mano.

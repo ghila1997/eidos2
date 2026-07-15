@@ -47,7 +47,7 @@
   organizzare/cestinare una mail vera, e farsi inviare un'email vera - tutte le azioni che
   spediscono o cestinano richiedono conferma esplicita prima di avvenire
 
-## Tappa 3 — Agente Locale (prima azione reale sul PC)
+## Tappa 3 — Agente Locale (prima azione reale sul PC) — ✅ fatto (2026-07-15)
 
 - **Ambiente**: si resta su un solo progetto Supabase (`eidos2`) — vedi DECISIONS.md, "Ambienti:
   supera la voce precedente — niente secondo Supabase prima di Tappa 8". Prima di ogni sessione
@@ -65,8 +65,11 @@
   2026-07-14), bloccata/da riautorizzare esplicitamente fuori. Enforcement centralizzato nel
   **Safety Supervisor** (`codice/orchestratore/safety/`, vedi DECISIONS.md "Safety Supervisor:
   punto unico di autorizzazione per ogni tool call"): usa i tool nativi dell'SDK
-  (`Read`/`Write`/`Edit`/`Glob`/`Grep`) via hook `PreToolUse` per lettura/scrittura, tool custom
-  MCP solo dove l'SDK non offre equivalente nativo (`move_file`/`delete_file`/`create_folder`).
+  (`Read`/`Write`/`Edit`/`Grep`) via hook `PreToolUse` per lettura/scrittura, tool custom MCP
+  dove l'SDK non offre un equivalente nativo con un path verificabile
+  (`list_directory`/`move_file`/`delete_file`/`create_folder` — `Glob` escluso, il suo
+  `tool_input` non espone un path controllabile, vedi DECISIONS.md 2026-07-14 "Agente Locale
+  (Ciclo B): Glob escluso dai tool nativi").
   Scrittura/cancellazione richiedono sempre conferma esplicita fuori dal controllo del modello:
   per la sessione locale (sincrona, singolo utente) un prompt a terminale condiviso tra hook e
   tool custom, senza bisogno della coda asincrona `azioni_pending` di Gmail (pensata per
@@ -75,7 +78,9 @@
   (vedi CLAUDE.md, "un solo motore agentico"; decisione di non creare un modulo "Autorizzazioni"
   separato in DECISIONS.md)
 - **Finito quando**: un comando in linguaggio naturale produce un'azione reale verificabile su
-  un file del PC del founder, dentro un perimetro di cartelle esplicitamente autorizzato
+  un file del PC del founder, dentro un perimetro di cartelle esplicitamente autorizzato —
+  verificato 2026-07-15 (scrittura con conferma, lettura immediata, blocco fuori perimetro senza
+  conferma), vedi DECISIONS.md e [docs/agente_locale/README.md](docs/agente_locale/README.md)
 
 ## Tappa 4 — Connettori Cloud (oltre email)
 

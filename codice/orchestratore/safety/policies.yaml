@@ -1,11 +1,14 @@
 # Policy del Safety Supervisor (vedi DECISIONS.md, "Safety Supervisor: punto
 # unico di autorizzazione per ogni tool call"). Valutate in ordine di
-# priorita' crescente, vince il primo match. Nessuna regola di perimetro
-# filesystem qui: non esiste ancora nulla che produca "path_in_perimetro"
-# nel contesto (arriva con Agente Locale, Ciclo B) - aggiungerla ora sarebbe
-# speculativa.
+# priorita' crescente, vince il primo match.
 
 policies:
+  - name: "Fuori dal perimetro autorizzato"
+    priority: 5
+    conditions: {path_in_perimetro: false}
+    response: deny
+    message: "Percorso fuori dal perimetro autorizzato."
+
   - name: "Azioni immediate, basso rischio"
     priority: 10
     category: immediata
