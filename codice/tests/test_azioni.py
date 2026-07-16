@@ -3,7 +3,7 @@ conferma esplicita, e la conferma deve restare scoped al tenant giusto."""
 import httpx
 import pytest
 
-from orchestratore import azioni, calendar_client, gmail_client
+from orchestratore import azioni, calendar_client, drive_client, gmail_client
 
 SUPABASE_URL = "https://fake.supabase.co"
 TENANT_A = "11111111-1111-1111-1111-111111111111"
@@ -269,3 +269,71 @@ async def test_conferma_trash_email_chiama_cestina_messaggio(respx_mock, monkeyp
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiamate == ["msg-1"]
+
+
+@pytest.mark.asyncio
+async def test_conferma_share_file_chiama_condividi_file(respx_mock, monkeypatch):
+    payload = {"file_id": "f-1", "email": "cliente@example.com", "ruolo": "reader", "pubblico": False}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_SHARE_FILE, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_condividi(access_token, file_id, email=None, ruolo="reader", pubblico=False):
+        chiamate.append((file_id, email, ruolo, pubblico))
+        return {"id": "perm-1"}
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "condividi_file", fake_condividi)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamate == [("f-1", "cliente@example.com", "reader", False)]
+
+
+@pytest.mark.asyncio
+async def test_conferma_no_su_share_file_non_condivide_nulla(respx_mock, monkeypatch):
+    payload = {"file_id": "f-1", "email": "cliente@example.com", "ruolo": "reader", "pubblico": False}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_SHARE_FILE, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamato = False
+
+    async def fake_condividi(*args, **kwargs):
+        nonlocal chiamato
+        chiamato = True
+
+    monkeypatch.setattr(drive_client, "condividi_file", fake_condividi)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=False)
+
+    assert risultato["stato"] == azioni.STATO_RIFIUTATA
+    assert chiamato is False
+
+
+@pytest.mark.asyncio
+async def test_conferma_trash_file_chiama_cestina_file(respx_mock, monkeypatch):
+    payload = {"file_id": "f-1"}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_TRASH_FILE, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, file_id):
+        chiamate.append(file_id)
+        return {"file_id": file_id}
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "cestina_file", fake_cestina)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamate == ["f-1"]

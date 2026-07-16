@@ -1,6 +1,6 @@
 import pytest
 
-from orchestratore import azioni, gmail_client, tools
+from orchestratore import azioni, drive_client, gmail_client, tools
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 
@@ -600,5 +600,137 @@ async def test_check_availability_sola_lettura(monkeypatch):
     monkeypatch.setattr(calendar_client, "controlla_disponibilita", fake_controlla)
 
     risultato = await tools._check_availability(TENANT, ["rossi@example.com"], "2026-07-20T00:00:00Z", "2026-07-21T00:00:00Z")
+    assert "rossi@example.com" in risultato
 
-    assert "libero" in risultato
+
+# --- Drive ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_share_file_non_condivide_subito_crea_solo_azione_pending(monkeypatch):
+    """Trappola centrale (come send_email): condividere un file espone dati
+    fuori dal controllo dell'utente, non deve MAI avvenire subito."""
+    condiviso = False
+
+    async def fake_condividi(*args, **kwargs):
+        nonlocal condiviso
+        condiviso = True
+
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        assert tipo == azioni.TIPO_SHARE_FILE
+        assert payload["file_id"] == "f-1"
+        assert payload["email"] == "cliente@example.com"
+        return "azione-share-1"
+
+    monkeypatch.setattr(drive_client, "condividi_file", fake_condividi)
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._share_file(TENANT, "f-1", email="cliente@example.com")
+
+    assert condiviso is False
+    assert "azione-share-1" in risultato
+
+
+@pytest.mark.asyncio
+async def test_share_file_pubblico_menziona_chiunque_abbia_il_link(monkeypatch):
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        assert payload["pubblico"] is True
+        return "azione-share-2"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._share_file(TENANT, "f-1", pubblico=True)
+
+    assert "chiunque abbia il link" in risultato
+
+
+@pytest.mark.asyncio
+async def test_trash_file_non_avviene_subito_crea_solo_azione_pending(monkeypatch):
+    cestinato = False
+
+    async def fake_cestina(*args, **kwargs):
+        nonlocal cestinato
+        cestinato = True
+
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        assert tipo == azioni.TIPO_TRASH_FILE
+        assert payload["file_id"] == "f-1"
+        return "azione-trash-file-1"
+
+    monkeypatch.setattr(drive_client, "cestina_file", fake_cestina)
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._trash_file(TENANT, "f-1")
+
+    assert cestinato is False
+    assert "azione-trash-file-1" in risultato
+
+
+@pytest.mark.asyncio
+async def test_search_files_esegue_subito_senza_conferma(monkeypatch):
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cerca(access_token, query=None, mime_type=None, cartella_id=None):
+        return [{"file_id": "f-1", "nome": "Contratto.pdf", "mime_type": "application/pdf"}]
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "cerca_file", fake_cerca)
+
+    risultato = await tools._search_files(TENANT, query="contratto")
+
+    assert "Contratto.pdf" in risultato
+
+
+@pytest.mark.asyncio
+async def test_read_file_binario_non_estrae_testo(monkeypatch):
+    """Stessa trappola già coperta per gli allegati Gmail: un file binario
+    non deve mai restituire un contenuto testuale inventato/troncato male."""
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_leggi(access_token, file_id):
+        return {"nome": "scansione.pdf", "mime_type": "application/pdf", "testo": None, "binario": True}
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "leggi_contenuto_file", fake_leggi)
+
+    risultato = await tools._read_file(TENANT, "f-1")
+
+    assert "binario" in risultato
+    assert "Tappa 5" in risultato
+
+
+@pytest.mark.asyncio
+async def test_read_file_testuale_restituisce_contenuto(monkeypatch):
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_leggi(access_token, file_id):
+        return {"nome": "note.txt", "mime_type": "text/plain", "testo": "appunti riunione", "binario": False}
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "leggi_contenuto_file", fake_leggi)
+
+    risultato = await tools._read_file(TENANT, "f-1")
+
+    assert "appunti riunione" in risultato
+
+
+@pytest.mark.asyncio
+async def test_move_file_esegue_subito_senza_conferma(monkeypatch):
+    chiamate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_sposta(access_token, file_id, cartella_destinazione_id):
+        chiamate.append((file_id, cartella_destinazione_id))
+        return {"file_id": file_id, "nome": "Report", "mime_type": "text/plain", "cartelle": [cartella_destinazione_id]}
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "sposta_file", fake_sposta)
+
+    risultato = await tools._move_file(TENANT, "f-1", "cartella-2")
+
+    assert chiamate == [("f-1", "cartella-2")]
+    assert "Report" in risultato

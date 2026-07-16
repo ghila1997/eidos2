@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from fondamenta.auth import get_sessione_corrente
 from memoria import db as memoria_db
 
-from . import azioni, import_calendar, import_mail, oauth, oauth_calendar, tools
+from . import azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, tools
 
 router = APIRouter()
 
@@ -219,3 +219,32 @@ async def oauth_calendar_callback(code: str, state: str):
 async def import_calendar_endpoint(request: Request):
     sessione = await get_sessione_corrente(request)
     return await import_calendar.esegui_import(sessione["tenant_id"])
+
+
+@router.get("/oauth/google_drive/authorize")
+async def oauth_drive_authorize(request: Request):
+    sessione = await get_sessione_corrente(request)
+    return RedirectResponse(oauth_drive.costruisci_url_autorizzazione(sessione["tenant_id"]))
+
+
+@router.get("/oauth/google_drive/callback")
+async def oauth_drive_callback(code: str, state: str):
+    try:
+        tenant_id = oauth.verifica_state(state)
+    except oauth.StatoNonValido:
+        raise HTTPException(status_code=400, detail="state non valido o scaduto")
+
+    tokens = await oauth_drive.scambia_codice(code)
+    if "refresh_token" not in tokens:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google non ha restituito un refresh_token: rimuovi l'accesso "
+                "app da myaccount.google.com/permissions e riprova (serve un "
+                "nuovo consenso esplicito)."
+            ),
+        )
+    await oauth.salva_credenziale(
+        tenant_id, oauth_drive.PROVIDER_DRIVE, oauth_drive.DRIVE_SCOPES, tokens["refresh_token"]
+    )
+    return {"status": "ok"}

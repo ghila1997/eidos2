@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from common.supabase_rest import rest_headers, supabase_settings
-from . import calendar_client, gmail_client
+from . import calendar_client, drive_client, gmail_client
 
 TIPO_SEND_EMAIL = "send_email"
 TIPO_REPLY_EMAIL = "reply_email"
@@ -20,6 +20,8 @@ TIPO_TRASH_EMAIL = "trash_email"
 TIPO_CREATE_EVENT = "create_event"
 TIPO_UPDATE_EVENT = "update_event"
 TIPO_DELETE_EVENT = "delete_event"
+TIPO_SHARE_FILE = "share_file"
+TIPO_TRASH_FILE = "trash_file"
 
 STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
@@ -189,6 +191,19 @@ async def _esegui_delete_event(tenant_id: str, payload: dict[str, Any]) -> None:
     )
 
 
+async def _esegui_share_file(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await drive_client.ottieni_access_token(tenant_id)
+    await drive_client.condividi_file(
+        access_token, payload["file_id"],
+        email=payload.get("email"), ruolo=payload["ruolo"], pubblico=payload["pubblico"],
+    )
+
+
+async def _esegui_trash_file(tenant_id: str, payload: dict[str, Any]) -> None:
+    access_token = await drive_client.ottieni_access_token(tenant_id)
+    await drive_client.cestina_file(access_token, payload["file_id"])
+
+
 _ESECUTORI = {
     TIPO_SEND_EMAIL: _esegui_send_email,
     TIPO_REPLY_EMAIL: _esegui_reply_email,
@@ -198,4 +213,6 @@ _ESECUTORI = {
     TIPO_CREATE_EVENT: _esegui_create_event,
     TIPO_UPDATE_EVENT: _esegui_update_event,
     TIPO_DELETE_EVENT: _esegui_delete_event,
+    TIPO_SHARE_FILE: _esegui_share_file,
+    TIPO_TRASH_FILE: _esegui_trash_file,
 }

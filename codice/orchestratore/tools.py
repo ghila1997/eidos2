@@ -9,7 +9,9 @@ Copertura "tutte le dita della mano" (vedi design Tappa 2/4, decisione
 inoltrare, segnare letta/archiviare/importante, organizzare in etichette,
 leggere allegati, cestinare, inviare una bozza esistente) + calendario
 (cercare, creare, modificare, cancellare, rispondere a inviti, controllare
-disponibilità) + memoria (lettura unificata, scrittura esplicita di fatti).
+disponibilità) + Drive (cercare, leggere, creare/caricare, organizzare in
+cartelle, condividere, cestinare) + memoria (lettura unificata, scrittura
+esplicita di fatti).
 
 Ogni funzione chiama prima il Safety Supervisor (`safety/supervisor.py`, vedi
 DECISIONS.md "Safety Supervisor: punto unico di autorizzazione per ogni tool
@@ -34,7 +36,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from memoria import db as memoria_db
 
-from . import azioni, calendar_client, embeddings, gmail_client
+from . import azioni, calendar_client, drive_client, embeddings, gmail_client
 from .safety import supervisor
 
 SERVER_NAME = "eidos_orchestratore"
@@ -470,6 +472,187 @@ async def _trash_email(tenant_id: str, message_id: str) -> str:
     )
 
 
+# --- Drive: lettura/organizzazione (immediate) ----------------------------
+
+async def _search_files(
+    tenant_id: str, query: str | None = None, mime_type: str | None = None, cartella_id: str | None = None,
+) -> str:
+    if rifiuto := await _autorizza(tenant_id, "search_files", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        file_trovati = await drive_client.cerca_file(access_token, query=query, mime_type=mime_type, cartella_id=cartella_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nel cercare su Drive, riprova o segnalalo: {exc}"
+    if not file_trovati:
+        return "Nessun file trovato."
+    righe = [f"- [{f['file_id']}] {f['nome']} ({f['mime_type']})" for f in file_trovati]
+    return "File trovati:\n" + "\n".join(righe)
+
+
+async def _read_file(tenant_id: str, file_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "read_file", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        contenuto = await drive_client.leggi_contenuto_file(access_token, file_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nel leggere il file, riprova o segnalalo: {exc}"
+    if contenuto["binario"]:
+        return (
+            f"File '{contenuto['nome']}' ({contenuto['mime_type']}) — binario, non riesco a "
+            "leggerne il contenuto testuale. L'estrazione per formati non testuali (PDF, "
+            "immagini, ecc.) arriva con Memoria: estensione documenti (Tappa 5) - per ora "
+            "so solo confermare che il file esiste e i suoi metadati."
+        )
+    return f"Contenuto di '{contenuto['nome']}':\n{contenuto['testo']}"
+
+
+async def _list_folder(tenant_id: str, cartella_id: str = "root") -> str:
+    if rifiuto := await _autorizza(tenant_id, "list_folder", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        file_trovati = await drive_client.elenca_cartella(access_token, cartella_id=cartella_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nell'elencare la cartella, riprova o segnalalo: {exc}"
+    if not file_trovati:
+        return "Cartella vuota."
+    righe = [f"- [{f['file_id']}] {f['nome']} ({f['mime_type']})" for f in file_trovati]
+    return "Contenuto della cartella:\n" + "\n".join(righe)
+
+
+async def _create_folder(tenant_id: str, nome: str, cartella_padre_id: str | None = None) -> str:
+    if rifiuto := await _autorizza(tenant_id, "create_folder", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        cartella = await drive_client.crea_cartella(access_token, nome, cartella_padre_id=cartella_padre_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nel creare la cartella, riprova o segnalalo: {exc}"
+    return f"Cartella creata (id {cartella['file_id']}): {nome}."
+
+
+async def _create_file(
+    tenant_id: str, nome: str, contenuto: str, mime_type: str = "text/plain", cartella_padre_id: str | None = None,
+) -> str:
+    if rifiuto := await _autorizza(tenant_id, "create_file", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        file_creato = await drive_client.crea_file(
+            access_token, nome, contenuto, mime_type=mime_type, cartella_padre_id=cartella_padre_id
+        )
+    except drive_client.DriveError as exc:
+        return f"Errore nel creare il file, riprova o segnalalo: {exc}"
+    return f"File creato (id {file_creato['file_id']}): {nome}."
+
+
+async def _update_file_content(tenant_id: str, file_id: str, contenuto: str, mime_type: str = "text/plain") -> str:
+    if rifiuto := await _autorizza(tenant_id, "update_file_content", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        file_aggiornato = await drive_client.aggiorna_contenuto_file(access_token, file_id, contenuto, mime_type=mime_type)
+    except drive_client.DriveError as exc:
+        return f"Errore nell'aggiornare il file, riprova o segnalalo: {exc}"
+    return f"Contenuto di '{file_aggiornato['nome']}' aggiornato."
+
+
+async def _rename_file(tenant_id: str, file_id: str, nuovo_nome: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "rename_file", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        await drive_client.rinomina_file(access_token, file_id, nuovo_nome)
+    except drive_client.DriveError as exc:
+        return f"Errore nel rinominare il file, riprova o segnalalo: {exc}"
+    return f"File rinominato in '{nuovo_nome}'."
+
+
+async def _move_file(tenant_id: str, file_id: str, cartella_destinazione_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "move_file", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        file_spostato = await drive_client.sposta_file(access_token, file_id, cartella_destinazione_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nello spostare il file, riprova o segnalalo: {exc}"
+    return f"'{file_spostato['nome']}' spostato nella cartella richiesta."
+
+
+async def _copy_file(
+    tenant_id: str, file_id: str, nuovo_nome: str | None = None, cartella_destinazione_id: str | None = None,
+) -> str:
+    if rifiuto := await _autorizza(tenant_id, "copy_file", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        copia = await drive_client.copia_file(
+            access_token, file_id, nuovo_nome=nuovo_nome, cartella_destinazione_id=cartella_destinazione_id
+        )
+    except drive_client.DriveError as exc:
+        return f"Errore nel copiare il file, riprova o segnalalo: {exc}"
+    return f"File copiato (id {copia['file_id']}): {copia['nome']}."
+
+
+async def _list_permissions(tenant_id: str, file_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "list_permissions", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        permessi = await drive_client.lista_permessi(access_token, file_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nel controllare i permessi, riprova o segnalalo: {exc}"
+    if not permessi:
+        return "Nessun permesso trovato (oltre al proprietario)."
+    righe = [
+        f"- [{p['id']}] {p['type']}" + (f" {p['emailAddress']}" if p.get("emailAddress") else "") + f" (ruolo: {p['role']})"
+        for p in permessi
+    ]
+    return "Permessi sul file:\n" + "\n".join(righe)
+
+
+async def _revoke_permission(tenant_id: str, file_id: str, permission_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "revoke_permission", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        await drive_client.revoca_permesso(access_token, file_id, permission_id)
+    except drive_client.DriveError as exc:
+        return f"Errore nel revocare il permesso, riprova o segnalalo: {exc}"
+    return "Permesso revocato."
+
+
+# --- Drive: distruttive, creano un'azione in attesa -------------------------
+
+async def _share_file(
+    tenant_id: str, file_id: str, email: str | None = None, ruolo: str = "reader", pubblico: bool = False,
+) -> str:
+    if rifiuto := await _autorizza(tenant_id, "share_file", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    azione_id = await azioni.crea_azione_pending(
+        tenant_id, azioni.TIPO_SHARE_FILE,
+        {"file_id": file_id, "email": email, "ruolo": ruolo, "pubblico": pubblico},
+    )
+    destinatario = "chiunque abbia il link" if pubblico else email
+    return (
+        f"Azione in attesa di conferma (id {azione_id}): condivisione del file {file_id} con "
+        f"{destinatario} (ruolo {ruolo}). L'utente deve confermare esplicitamente prima che "
+        "l'accesso venga concesso."
+    )
+
+
+async def _trash_file(tenant_id: str, file_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "trash_file", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_TRASH_FILE, {"file_id": file_id})
+    return (
+        f"Azione in attesa di conferma (id {azione_id}): sposta nel cestino il file "
+        f"{file_id}. L'utente deve confermare esplicitamente prima che avvenga."
+    )
+
+
 # --- Wiring SDK -----------------------------------------------------------
 
 def crea_server(tenant_id: str):
@@ -836,6 +1019,191 @@ def crea_server(tenant_id: str):
     async def delete_event(args: dict) -> dict:
         return _testo(await _delete_event(tenant_id, args["event_id"], calendario=args.get("calendario")))
 
+    # --- Drive ----------------------------------------------------------
+
+    @tool(
+        "search_files",
+        (
+            "Cerca file/cartelle su Google Drive per nome e full-text "
+            "(contenuto indicizzato da Google per Docs/Sheets/Slides/PDF/"
+            "testo). Esclude di default il cestino. mime_type opzionale per "
+            "restringere (es. 'application/vnd.google-apps.folder' per solo "
+            "cartelle). cartella_id opzionale per restringere a una cartella."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "mime_type": {"type": "string"},
+                "cartella_id": {"type": "string"},
+            },
+        },
+    )
+    async def search_files(args: dict) -> dict:
+        return _testo(await _search_files(
+            tenant_id, query=args.get("query"), mime_type=args.get("mime_type"), cartella_id=args.get("cartella_id"),
+        ))
+
+    @tool(
+        "read_file",
+        (
+            "Legge il contenuto testuale di un file Drive (file_id, vedi "
+            "search_files/list_folder). Per Google Docs/Sheets/Slides "
+            "esporta automaticamente in testo/CSV. Per file binari (PDF, "
+            "immagini) conferma solo esistenza e metadati, senza estrarre "
+            "il testo (arriva con Tappa 5)."
+        ),
+        {"file_id": str},
+    )
+    async def read_file(args: dict) -> dict:
+        return _testo(await _read_file(tenant_id, args["file_id"]))
+
+    @tool(
+        "list_folder",
+        "Elenca il contenuto di una cartella Drive (cartella_id, default 'root' = la cartella principale).",
+        {"type": "object", "properties": {"cartella_id": {"type": "string"}}},
+    )
+    async def list_folder(args: dict) -> dict:
+        return _testo(await _list_folder(tenant_id, cartella_id=args.get("cartella_id", "root")))
+
+    @tool(
+        "create_folder",
+        "Crea una cartella su Drive. cartella_padre_id opzionale (default: cartella principale).",
+        {
+            "type": "object",
+            "properties": {"nome": {"type": "string"}, "cartella_padre_id": {"type": "string"}},
+            "required": ["nome"],
+        },
+    )
+    async def create_folder(args: dict) -> dict:
+        return _testo(await _create_folder(tenant_id, args["nome"], cartella_padre_id=args.get("cartella_padre_id")))
+
+    @tool(
+        "create_file",
+        (
+            "Crea/carica un nuovo file testuale su Drive (contenuto in "
+            "chiaro, non binario). mime_type default text/plain. "
+            "cartella_padre_id opzionale."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "nome": {"type": "string"},
+                "contenuto": {"type": "string"},
+                "mime_type": {"type": "string"},
+                "cartella_padre_id": {"type": "string"},
+            },
+            "required": ["nome", "contenuto"],
+        },
+    )
+    async def create_file(args: dict) -> dict:
+        return _testo(await _create_file(
+            tenant_id, args["nome"], args["contenuto"],
+            mime_type=args.get("mime_type", "text/plain"), cartella_padre_id=args.get("cartella_padre_id"),
+        ))
+
+    @tool(
+        "update_file_content",
+        (
+            "Sovrascrive il contenuto testuale di un file Drive esistente "
+            "(file_id). Drive mantiene le versioni precedenti in cronologia: "
+            "reversibile, avviene subito senza conferma."
+        ),
+        {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}, "contenuto": {"type": "string"}, "mime_type": {"type": "string"}},
+            "required": ["file_id", "contenuto"],
+        },
+    )
+    async def update_file_content(args: dict) -> dict:
+        return _testo(await _update_file_content(
+            tenant_id, args["file_id"], args["contenuto"], mime_type=args.get("mime_type", "text/plain"),
+        ))
+
+    @tool("rename_file", "Rinomina un file/cartella Drive (file_id, nuovo_nome). Reversibile: avviene subito.", {"file_id": str, "nuovo_nome": str})
+    async def rename_file(args: dict) -> dict:
+        return _testo(await _rename_file(tenant_id, args["file_id"], args["nuovo_nome"]))
+
+    @tool(
+        "move_file",
+        "Sposta un file/cartella in un'altra cartella Drive (cartella_destinazione_id). Reversibile: avviene subito.",
+        {"file_id": str, "cartella_destinazione_id": str},
+    )
+    async def move_file(args: dict) -> dict:
+        return _testo(await _move_file(tenant_id, args["file_id"], args["cartella_destinazione_id"]))
+
+    @tool(
+        "copy_file",
+        "Copia un file Drive, opzionalmente con nuovo nome e/o in un'altra cartella.",
+        {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "nuovo_nome": {"type": "string"},
+                "cartella_destinazione_id": {"type": "string"},
+            },
+            "required": ["file_id"],
+        },
+    )
+    async def copy_file(args: dict) -> dict:
+        return _testo(await _copy_file(
+            tenant_id, args["file_id"], nuovo_nome=args.get("nuovo_nome"),
+            cartella_destinazione_id=args.get("cartella_destinazione_id"),
+        ))
+
+    @tool("list_permissions", "Elenca chi ha accesso a un file Drive (file_id) e con quale ruolo.", {"file_id": str})
+    async def list_permissions(args: dict) -> dict:
+        return _testo(await _list_permissions(tenant_id, args["file_id"]))
+
+    @tool(
+        "revoke_permission",
+        (
+            "Revoca un accesso già concesso su un file (permission_id, vedi "
+            "list_permissions). Reversibile (si può ri-condividere): avviene subito."
+        ),
+        {"file_id": str, "permission_id": str},
+    )
+    async def revoke_permission(args: dict) -> dict:
+        return _testo(await _revoke_permission(tenant_id, args["file_id"], args["permission_id"]))
+
+    @tool(
+        "share_file",
+        (
+            "Condivide un file/cartella Drive con un'email specifica (ruolo "
+            "reader/writer/commenter) oppure pubblicamente (pubblico=true, "
+            "chiunque abbia il link). NON avviene subito: crea un'azione in "
+            "attesa di conferma umana esplicita, perché espone dati fuori "
+            "dal controllo diretto dell'utente."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "email": {"type": "string", "description": "Obbligatoria se pubblico non è true"},
+                "ruolo": {"type": "string", "enum": ["reader", "writer", "commenter"], "description": "Default: reader"},
+                "pubblico": {"type": "boolean", "description": "true = chiunque abbia il link, default false"},
+            },
+            "required": ["file_id"],
+        },
+    )
+    async def share_file(args: dict) -> dict:
+        return _testo(await _share_file(
+            tenant_id, args["file_id"], email=args.get("email"),
+            ruolo=args.get("ruolo", "reader"), pubblico=args.get("pubblico", False),
+        ))
+
+    @tool(
+        "trash_file",
+        (
+            "Sposta un file/cartella Drive nel cestino (reversibile, non "
+            "elimina in modo permanente). NON avviene subito: crea un'azione "
+            "in attesa di conferma umana esplicita."
+        ),
+        {"file_id": str},
+    )
+    async def trash_file(args: dict) -> dict:
+        return _testo(await _trash_file(tenant_id, args["file_id"]))
+
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="1.0.0",
@@ -843,6 +1211,8 @@ def crea_server(tenant_id: str):
             search_memoria, remember_fact, draft_email, send_email, reply_email, forward_email,
             send_draft, trash_email, mark_email, organize_email, list_labels, get_attachment,
             search_events, check_availability, respond_to_invite, create_event, update_event, delete_event,
+            search_files, read_file, list_folder, create_folder, create_file, update_file_content,
+            rename_file, move_file, copy_file, list_permissions, revoke_permission, share_file, trash_file,
         ],
     )
 
@@ -866,4 +1236,17 @@ ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__create_event",
     f"mcp__{SERVER_NAME}__update_event",
     f"mcp__{SERVER_NAME}__delete_event",
+    f"mcp__{SERVER_NAME}__search_files",
+    f"mcp__{SERVER_NAME}__read_file",
+    f"mcp__{SERVER_NAME}__list_folder",
+    f"mcp__{SERVER_NAME}__create_folder",
+    f"mcp__{SERVER_NAME}__create_file",
+    f"mcp__{SERVER_NAME}__update_file_content",
+    f"mcp__{SERVER_NAME}__rename_file",
+    f"mcp__{SERVER_NAME}__move_file",
+    f"mcp__{SERVER_NAME}__copy_file",
+    f"mcp__{SERVER_NAME}__list_permissions",
+    f"mcp__{SERVER_NAME}__revoke_permission",
+    f"mcp__{SERVER_NAME}__share_file",
+    f"mcp__{SERVER_NAME}__trash_file",
 ]
