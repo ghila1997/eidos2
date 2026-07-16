@@ -82,7 +82,7 @@
   verificato 2026-07-15 (scrittura con conferma, lettura immediata, blocco fuori perimetro senza
   conferma), vedi DECISIONS.md e [docs/agente_locale/README.md](docs/agente_locale/README.md)
 
-## Tappa 4 — Connettori Cloud (oltre email) — 🔶 Google Calendar fatto (2026-07-16), Storage/Drive e Suite Microsoft restano
+## Tappa 4 — Connettori Cloud (oltre email) — 🔶 Suite Google fatta (Calendar 2026-07-16, Drive 2026-07-16), Suite Microsoft resta
 
 - Calendario, storage cloud; OAuth gestito per singola capacità, non per fornitore in blocco
 - **Pulizia rimandata da Tappa 2 — fatta**: `codice/orchestratore/oauth.py` mescolava la parte
@@ -95,15 +95,21 @@
   e corretti durante la verifica (scope OAuth incompleto, errori nascosti, data non nota al
   modello, durata di default, doppia conferma ridondante, crash CLI su azioni Calendar — vedi
   DECISIONS.md e [docs/orchestratore/README.md](docs/orchestratore/README.md))
+- **Storage cloud (Drive)**: il founder cerca/legge/crea/organizza/condivide/cestina file
+  reali tramite l'assistente — ✅ verificato 2026-07-16 (13 tool, tutti contro Drive reale:
+  cartelle, file, lettura con export per Google Docs/Sheets/Slides, aggiornamento contenuto,
+  rinomina, spostamento, copia, condivisione con gate rispettato e permesso verificato con un
+  destinatario reale, revoca permesso verificata, cestinamento con gate rispettato). Un bug
+  reale trovato e corretto durante la verifica, non nel connettore ma nel CLI
+  (`httpx.CookieConflict` al login con una sessione precedente scaduta — vedi DECISIONS.md).
 - **Suite Google ora, Suite Microsoft dopo**. Target imprenditori/PMI usa in modo diffuso
   entrambi gli ecosistemi (Google Workspace e Microsoft 365) — non è un'idea da valutare "se",
   è un candidato reale già riconosciuto. Ma si costruisce **una suite alla volta**, validata
   end-to-end (STOP 2 con uso reale) prima di iniziare la successiva — mai due connettori dello
   stesso tipo (due calendari, due caselle mail) non provati in parallelo (vedi DECISIONS.md
   2026-07-15, "Connettori multi-provider"):
-  - **Ora**: Google Calendar (questa tappa). Drive/storage Google quando si arriva a quella
-    parte di Tappa 4.
-  - **Dopo, quando la suite Google è validata**: Suite Microsoft — Outlook Calendar, Outlook
+  - **Fatto**: Google Calendar e Google Drive (questa tappa) — Suite Google completa.
+  - **Dopo, ora che la suite Google è validata**: Suite Microsoft — Outlook Calendar, Outlook
     Mail (secondo fornitore oltre Gmail), OneDrive. OAuth separato (Microsoft identity
     platform, flusso diverso da Google), client dedicati (Microsoft Graph API — campi propri:
     `subject` non `summary`, `body` non `description`, ricorrenza non-RRULE per Calendar).

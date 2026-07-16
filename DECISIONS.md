@@ -715,3 +715,91 @@ calendari per non dare risposte di disponibilità sbagliate.
 il founder ripete il consenso OAuth Calendar una volta; pattern "cattura CalendarError nei tool,
 mai lasciarla propagare silenziosamente" da riusare per ogni prossimo tool che parla con un'API
 esterna (Outlook quando arriverà, ecc.).
+
+---
+
+## 2026-07-16 — Drive: scope pieno `drive` invece di `drive.file`
+
+**Contesto**: progettando il connettore Google Drive (Tappa 4, terzo provider OAuth dopo
+Gmail/Calendar), lo scope più stretto disponibile per operare su file è `drive.file`, che dà
+accesso solo ai file creati o esplicitamente aperti dall'app stessa - non ai file reali che il
+founder ha già in Drive, caricati da altrove. Un assistente utile deve poter cercare/leggere/
+organizzare/condividere documenti preesistenti (es. "cerca il contratto di Rossi"), non solo
+quelli che ha creato lui.
+
+**Decisione**: scope pieno `https://www.googleapis.com/auth/drive` (vedi `oauth_drive.py`).
+Stessa logica già accettata per Gmail (`gmail.modify`, non uno scope più stretto che avrebbe
+limitato la copertura richiesta dal criterio di completezza, DECISIONS.md 2026-07-14). Non
+gestisce impostazioni account, quota, Shared Drives (amministrazione, fuori scope, stesso
+criterio "cosa fa un umano" non "tutta l'API").
+
+**Alternative considerate**: `drive.file` - scartata, inutile per file preesistenti non creati
+dall'app; combinazione `drive.readonly` (lettura piena) + `drive.file` (scrittura solo su file
+propri) - scartata, non permetterebbe comunque organizzare/condividere/cestinare file reali
+preesistenti, che è il caso d'uso centrale.
+
+**Conseguenze**: consenso Google più ampio da mostrare al founder (schermata di consenso
+esplicita per uno scope sensibile); nessun impatto su Gmail/Calendar (OAuth per singola
+capacità, consensi separati, vedi ROADMAP.md Tappa 8 per la valutazione - rimandata a quella
+tappa - di un consenso unico per provider).
+
+---
+
+## 2026-07-16 — cli.py: CookieConflict tra cookie stale e nuovo alla stessa chiave
+
+**Contesto**: testando a mano l'autorizzazione Drive (Tappa 4), il founder aveva un
+`~/.eidos/cookies.json` di una sessione scaduta. Il login falliva con
+`httpx.CookieConflict: Multiple cookies exist with name=sb_access_token` invece di
+sovrascrivere la sessione vecchia.
+
+**Causa**: `_login` salvava da `client.cookies` (il jar accumulato del client HTTP), che
+conteneva sia il cookie `sb_access_token` precaricato dal file (dominio `""`, come viene
+scritto da `_salva_cookie`) sia quello nuovo impostato dalla risposta di login (dominio reale
+del server) - stesso nome, domini diversi. `httpx.Cookies` solleva `CookieConflict` a qualunque
+accesso ambiguo (`dict()`, `[]`, `.get()` senza `domain`), anche se logicamente ovvio quale dei
+due sia quello valido.
+
+**Decisione**: `_login` ora salva da `resp.cookies` (i soli cookie impostati dalla risposta di
+login corrente), mai dal jar accumulato del client - nessuna ambiguità possibile, perché quella
+risposta non contiene mai due cookie con lo stesso nome.
+
+**Perché non l'ha preso un test automatico prima**: nessun test esercitava `_login` con un
+client che avesse già un cookie stale precaricato (scenario reale solo quando esiste già un
+`cookies.json` di una sessione precedente scaduta) - aggiunto
+`test_login_con_cookie_stale_precaricato_non_solleva_cookie_conflict` in `test_cli.py` a
+riproduzione del bug.
+
+**Conseguenze**: nessun impatto sul formato del file di sessione salvato o sul resto del CLI.
+
+---
+
+## 2026-07-16 — Tappa 4: Drive verificato end-to-end, Suite Google (Calendar+Drive) completa
+
+**Contesto**: STOP 2 del connettore Drive, verifica reale contro il Drive del founder (non solo
+mock) tramite una sequenza scriptata di messaggi via `/chat` - stesso principio già applicato a
+Gmail/Calendar (playbook/connettori.md, punto 4).
+
+**Verificato**: tutti i 13 tool contro Drive reale - `create_folder`/`create_file` (con
+contenuto corretto), `search_files`, `read_file` (Google Doc via export), `update_file_content`,
+`rename_file`, `list_folder`, `copy_file`, `move_file` (verificato con `list_folder` sulla
+cartella di destinazione), `share_file` (gate rispettato, permesso "reader" effettivamente
+comparso dopo conferma), `list_permissions`, `revoke_permission` (verificato con una seconda
+lettura dei permessi dopo la revoca), `trash_file` ×4 (file e cartelle, gate rispettato).
+
+**Trappola di metodo trovata nel primo giro di test**: condividere un file con la **stessa**
+email del proprietario è un no-op silenzioso lato Google Drive (un utente ha un solo permesso
+per file, non può avere sia owner che reader) - la condivisione veniva confermata senza errori
+ma non compariva in `list_permissions`, e il modello si è correttamente rifiutato di inventare
+una revoca su un permesso inesistente o di toccare l'owner, chiedendo chiarimento invece di
+indovinare (comportamento difensivo corretto, non un bug). Rifatto il test con un secondo
+account reale (`riccardoghilardotti@gmail.com`) come destinatario: condivisione, lista permessi
+e revoca confermate tutte corrette. Non è un bug del connettore, è un'annotazione per chi
+ripete questo tipo di test in futuro (Outlook/OneDrive incluso).
+
+**Conseguenze**: ROADMAP.md Tappa 4 aggiornata - Suite Google (Calendar + Drive) completa;
+Storage cloud della Tappa richiede solo Drive (nessun secondo storage Google da coprire).
+Prossimo incremento della Tappa: Suite Microsoft (Outlook Mail/Calendar, OneDrive), quando si
+riprende quella parte.
+
+---
+
