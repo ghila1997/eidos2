@@ -60,7 +60,12 @@ Test automatici: `codice/tests/test_perimetro.py`, `test_agente_locale_hook.py`,
 - DECISIONS.md — "Safety Supervisor: punto unico di autorizzazione per ogni tool call"
 - DECISIONS.md — "Agente Locale (Ciclo B): Glob escluso dai tool nativi, sostituito da list_directory custom"
 - DECISIONS.md — "Autorizzazioni: niente modulo Autorizzazioni separato, resta dentro Orchestratore"
+- DECISIONS.md 2026-07-16 — "System prompt degli agenti: allineati alle best practice correnti
+  Anthropic" e "Trappola reale: Agente Locale chiedeva conferma in chat invece di far scattare
+  il gate vero" (vedi sotto)
 - ROADMAP.md — Tappa 3, "Perimetro di accesso"
+- playbook/system-prompt-agenti.md — struttura e best practice del system prompt di
+  `_system_prompt` in `cli_locale.py`
 
 ## Trappole note / attenzioni
 
@@ -82,3 +87,16 @@ Test automatici: `codice/tests/test_perimetro.py`, `test_agente_locale_hook.py`,
 - Richiede il CLI Node.js di Claude Code installato e loggato in locale (non solo nel
   container Docker di Railway, diverso da Orchestratore che gira server-side) — verificare
   con `claude auth status`
+- **Il modello può bypassare il gate reale chiedendo conferma in chat invece di chiamare il
+  tool**: trovato testando dal vivo il 2026-07-16 su `create_folder` — il modello rispondeva
+  "Confermi la creazione...?" in linguaggio naturale senza mai invocare il tool, quindi il vero
+  gate (`conferma_terminale`, dentro il tool, fuori dal controllo del modello) non scattava mai;
+  rispondere "n" in chat dava l'impressione di aver negato l'azione, ma nessuna verifica di
+  perimetro/Supervisor era mai avvenuta. Corretto nel system prompt (sezione `<conferme>`:
+  chiamare subito il tool quando le informazioni ci sono già, chiedere in chat solo quello che
+  manca davvero, es. quale cartella) — stessa istruzione già presente nel prompt
+  dell'Orchestratore. Riverificato dopo la correzione: il prompt `[Conferma richiesta] ...
+  [y/n]:` compare davvero e la risposta dell'utente è rispettata in entrambi i casi
+  (creazione/annullamento, verificato anche sul filesystem). Nessun test automatico copre
+  questo comportamento — rientra nella nota di CLAUDE.md "Verifica del comportamento agentico
+  (eval)", non in `codice/tests/`. Vedi DECISIONS.md 2026-07-16.
