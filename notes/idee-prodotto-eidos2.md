@@ -132,6 +132,45 @@ progettato, e serve prima aver validato lo scheletro con un solo utente.
 decisione di mappa/architettura del modulo Store, non un dettaglio interno a un modulo
 esistente).
 
+## Connettore mail generico (IMAP/SMTP) oltre Google/Microsoft
+
+**Emersa**: 2026-07-16, avviando la parte Storage/Drive di Tappa 4 (Connettori Cloud),
+osservazione dell'utente che Google Workspace + Microsoft 365 insieme non coprono la
+mail aziendale reale — una fetta rilevante di PMI/freelance italiane usa provider di
+posta diversi (hosting/dominio proprio via cPanel, Aruba, Register.it, PEC, ecc.) con
+solo IMAP/SMTP standard, senza OAuth né API dedicata.
+
+**Idea**: un terzo connettore mail generico via IMAP (lettura/organizzazione) + SMTP
+(invio), autenticato con credenziali classiche (utente/password o app password) invece
+del flusso OAuth usato per Gmail/Outlook — copre il caso che oggi il "una suite alla
+volta" (Google poi Microsoft, vedi ROADMAP.md Tappa 4) lascia fuori.
+
+**Perché non ora**: la sequenza dichiarata in ROADMAP.md Tappa 4 è già "una suite alla
+volta, validata end-to-end prima della successiva" — Google Calendar è appena stato
+validato, Drive/Storage Google è in corso, poi Suite Microsoft. Un terzo connettore mail
+prima che Microsoft sia anche solo iniziato romperebbe quella sequenza (due connettori
+mail — Gmail e questo — non validati in parallelo, lo stesso principio già scelto per
+evitare due calendari o due caselle mail insieme, vedi DECISIONS.md 2026-07-15).
+
+**Differenze da tenere a mente quando si arriva qui** (non da risolvere ora): niente
+OAuth (credenziali da cifrare come per gli altri provider, ma flusso di raccolta
+diverso — form utente/password, non redirect); IMAP non ha un concetto nativo di
+"thread"/label come Gmail (serve mappare reply-in-thread e organizzazione su
+header `References`/`In-Reply-To` e cartelle IMAP invece che su thread-id ed
+etichette); il criterio "completezza del connettore" (playbook/connettori.md) resta lo
+stesso metro (cerca/rispondi-nel-thread/inoltra/segna letta-archivia-importante/
+organizza in cartelle/leggi allegati/cestina), ma va riverificato contro cosa espone
+davvero IMAP/SMTP standard rispetto a un'API dedicata.
+
+**Da NON fare ora**: aggiungerlo alla ROADMAP.md o iniziarne il design — resta
+un'idea non decisa finché la Suite Microsoft non è validata (dopo Drive/Storage Google
+di questa sessione).
+
+**Prossimo passo quando arriva il momento**: portare la decisione a `saas-architect`
+(è un nuovo connettore in mappa, non un dettaglio interno a un modulo esistente) — da
+riproporre dopo la Suite Microsoft, quando la sequenza "una suite alla volta" lo
+consente.
+
 ## Distribuzione di Agente Locale a un cliente reale non tecnico
 
 **Emersa**: 2026-07-15, testando manualmente `cli_locale.py` (Tappa 3, Ciclo B) per la prima
