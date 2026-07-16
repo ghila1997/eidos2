@@ -40,7 +40,15 @@ def _login(client: httpx.Client) -> None:
     if resp.status_code != 200:
         print(f"Login fallito ({resp.status_code}): {resp.text}")
         raise SystemExit(1)
-    _salva_cookie(client.cookies)
+    # Trappola reale trovata testando a mano (2026-07-16): `client.cookies`
+    # accumula anche un cookie sb_access_token stale precaricato da un
+    # cookies.json precedente (dominio "" per come lo salviamo noi) insieme
+    # a quello appena impostato dalla risposta (dominio reale, es.
+    # eidos2-api-production.up.railway.app) - stesso nome, domini diversi,
+    # httpx.Cookies solleva CookieConflict a qualunque accesso ambiguo
+    # (dict(), [] o .get() senza domain). `resp.cookies` contiene solo i
+    # cookie impostati da QUESTA risposta, nessuna ambiguità possibile.
+    _salva_cookie(resp.cookies)
     print("Login riuscito.\n")
 
 

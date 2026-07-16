@@ -1,6 +1,12 @@
 """Trappola trovata testando Tappa 4 a mano: _mostra_conferma assumeva
 payload sempre di forma Gmail (destinatario/oggetto/corpo) e andava in
 KeyError su un'azione pending di tipo Calendar (titolo/event_id/...)."""
+import json
+
+import httpx
+import pytest
+
+import cli
 from cli import _descrivi_azione, _interpreta_risposta
 
 
@@ -51,3 +57,35 @@ def test_interpreta_risposta_non_riconosciuta_ritorna_none():
     assert _interpreta_risposta("forse") is None
     assert _interpreta_risposta("") is None
     assert _interpreta_risposta("ciao Eidos") is None
+
+
+def test_login_con_cookie_stale_precaricato_non_solleva_cookie_conflict(respx_mock, monkeypatch, tmp_path):
+    """Trappola reale trovata testando a mano (2026-07-16): un cookies.json
+    precedente (dominio "" per come lo salviamo) più il cookie appena
+    impostato dalla risposta di login (dominio reale del server) hanno lo
+    stesso nome sb_access_token su domini diversi - client.cookies (jar
+    accumulato) va in CookieConflict a qualunque accesso ambiguo. _login
+    deve salvare da resp.cookies (scoped alla sola risposta), mai da
+    client.cookies."""
+    cookie_file = tmp_path / "cookies.json"
+    monkeypatch.setattr(cli, "COOKIE_FILE", cookie_file)
+    risposte = iter(["founder@example.com", "password-vera"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(risposte))
+
+    respx_mock.post(f"{cli.BASE_URL}/login").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "ok"},
+            headers=[
+                ("set-cookie", "sb_access_token=token-nuovo; Path=/; HttpOnly"),
+                ("set-cookie", "sb_refresh_token=refresh-nuovo; Path=/; HttpOnly"),
+            ],
+        )
+    )
+
+    with httpx.Client(base_url=cli.BASE_URL, cookies={"sb_access_token": "token-vecchio-stale"}) as client:
+        cli._login(client)  # non deve sollevare httpx.CookieConflict
+
+    salvato = json.loads(cookie_file.read_text())
+    assert salvato["sb_access_token"] == "token-nuovo"
+    assert salvato["sb_refresh_token"] == "refresh-nuovo"
