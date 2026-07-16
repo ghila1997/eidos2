@@ -803,3 +803,74 @@ riprende quella parte.
 
 ---
 
+## 2026-07-16 — System prompt degli agenti: allineati alle best practice correnti Anthropic, non scritti a naso
+
+**Contesto**: revisione del system prompt dell'Orchestratore (`_costruisci_system_prompt` in
+`codice/orchestratore/router.py`) su richiesta del founder, con l'ausilio della skill
+`prompt-master-main` e una verifica diretta sulla documentazione ufficiale Anthropic
+(prompting best practices generali + pagina dedicata a Claude Sonnet 5, il modello in uso).
+Stesso trattamento applicato subito dopo al system prompt dell'Agente Locale
+(`codice/agente_locale/cli_locale.py`), l'unico altro punto del progetto con un proprio system
+prompt.
+
+**Decisione**: ogni system prompt di agente nel progetto (Orchestratore, Agente Locale, e i
+futuri subagenti specializzati con `AgentDefinition` quando arriveranno, vedi CLAUDE.md
+"Regole specifiche del progetto") segue le best practice correnti Anthropic per il modello in
+uso, verificate online prima di ogni modifica — non scritte a memoria né copiate da pattern
+generici di prompt engineering trovati altrove. Checklist operativa concreta in
+[playbook/system-prompt-agenti.md](playbook/system-prompt-agenti.md).
+
+**Cosa cambia concretamente oggi**: struttura a sezioni in tag XML invece di prosa continua
+(raccomandazione corrente per prompt multi-sezione); istruzione esplicita a parallelizzare
+chiamate a tool indipendenti quando l'agente ne ha più di uno pertinente alla stessa richiesta;
+istruzione a valutare la qualità di un risultato tool vuoto/parziale prima di trattarlo come
+"nessun dato", distinta dal caso di errore esplicito già coperto.
+
+**Perché ora**: nessun errore in produzione l'ha causato - è manutenzione preventiva suggerita
+dal founder dopo aver visto che la ricerca online ha prodotto suggerimenti concreti e specifici
+al modello in uso (Claude Sonnet 5), diversi da quanto sarebbe emerso da sola intuizione. Vale
+la pena fissarlo come pratica ricorrente invece che come intervento isolato.
+
+**Conseguenze**: nessun impatto sul comportamento dei tool o sui gate di sicurezza (il Safety
+Supervisor resta l'unico punto di autorizzazione, invariato). Verificato che i test esistenti
+(`test_router.py`) continuano a passare - controllano substring del prompt, non il testo
+esatto.
+
+---
+
+## 2026-07-16 — Trappola reale: Agente Locale chiedeva conferma in chat invece di far scattare il gate vero
+
+**Contesto**: verifica manuale live del nuovo system prompt di Agente Locale (vedi voce sopra),
+sessione reale con cartella di test autorizzata in `scratchpad`, nessun dato di produzione
+toccato. Chiesto "crea una cartella chiamata prova_conferma": il modello ha risposto in chat
+"Confermi la creazione...?" invece di chiamare `create_folder`.
+
+**Causa**: a differenza del system prompt dell'Orchestratore, quello di Agente Locale non
+diceva esplicitamente al modello di chiamare subito il tool quando ha già le informazioni
+necessarie. Risultato osservabile: rispondendo "n" al posto della vera conferma, il modello ha
+detto "Ok, non creo nulla" - ma `create_folder` non era mai stato invocato, quindi il vero gate
+(`conferma_terminale`, dentro il tool, fuori dal controllo del modello - vedi DECISIONS.md
+"Safety Supervisor: punto unico di autorizzazione per ogni tool call") non è mai scattato. Il
+modello si era sostituito al gate strutturale con una propria valutazione conversazionale -
+innocuo in questo caso (nessuna azione eseguita) ma esattamente il pattern che l'architettura
+vuole evitare (CLAUDE.md, "Azioni distruttive": "l'utente conferma fuori dal controllo del
+modello").
+
+**Correzione**: aggiunta a `<conferme>` in `_system_prompt` (`codice/agente_locale/
+cli_locale.py`) la stessa istruzione già presente nell'Orchestratore: chiamare subito il tool
+quando le informazioni ci sono già, chiedere in chat solo quello che manca davvero (es. quale
+cartella). Riverificato dal vivo dopo la correzione: il prompt `[Conferma richiesta]
+create_folder: ...` compare davvero, la risposta "n" lo nega correttamente (nessuna cartella
+creata) e la risposta "y" crea la cartella per davvero (verificato sul filesystem).
+
+**Perché non l'ha preso un test automatico**: nessun test esisteva per `_system_prompt` di
+Agente Locale (a differenza dell'Orchestratore) - il gap è stato trovato solo testando a mano
+il comportamento reale col modello, non leggendo il testo del prompt. Non ancora coperto da un
+test automatico: rientra nella nota "Verifica del comportamento agentico (eval)" di CLAUDE.md,
+non in `codice/tests/`.
+
+**Conseguenze**: nessun'altra azione distruttiva di Agente Locale (`delete_file`, `move_file`)
+condivide lo stesso system prompt, quindi la correzione copre anche quelle senza modifiche
+aggiuntive. `docs/agente_locale/README.md` non esiste ancora (linkato da PROJECT.md ma non
+scritto) - questa trappola va riportata lì alla sezione "Trappole note" quando quel file verrà
+creato.

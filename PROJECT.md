@@ -51,4 +51,8 @@ I README di modulo (`docs/{{modulo}}/README.md`) si scrivono quando il modulo vi
 - [playbook/connettori.md](playbook/connettori.md) — checklist operativa per implementare un
   connettore, estratta da Gmail (Tappa 2); vedi CLAUDE.md, "Playbook operativi", per
   quando/come si scrive un playbook
+- [playbook/system-prompt-agenti.md](playbook/system-prompt-agenti.md) — checklist operativa
+  per scrivere/modificare il system prompt di un agente (struttura, best practice da
+  verificare online prima di ogni modifica), estratta da Orchestratore e Agente Locale; si
+  applica anche ai futuri subagenti specializzati
 - `notes/idee-salvate-da-eidos-v1.md` — idee recuperate dal progetto precedente, non ancora decise per questo progetto
