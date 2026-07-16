@@ -824,7 +824,10 @@ async def test_import_document_gmail_attachment_recupera_e_ingerisce(monkeypatch
     risultato = await tools._import_document(TENANT, "gmail_attachment", message_id="msg-1", attachment_id="att-1")
 
     assert ricevuto["fonte"] == "gmail_attachment"
-    assert ricevuto["source_id"] == "msg-1:att-1"
+    # source_id stabile: message_id + FILENAME, mai l'attachment_id che su
+    # Gmail vero cambia a ogni fetch (con l'id instabile nel source_id il
+    # match per source non scatterebbe mai su un re-import)
+    assert ricevuto["source_id"] == "msg-1:fattura.pdf"
     assert ricevuto["nome_file"] == "fattura.pdf"
     assert "importato" in risultato
 
@@ -868,3 +871,113 @@ async def test_import_document_fonte_non_valida():
 async def test_import_document_gmail_senza_parametri_richiesti():
     risultato = await tools._import_document(TENANT, "gmail_attachment")
     assert "message_id" in risultato and "attachment_id" in risultato
+
+
+# --- Ciclo di vita documenti (Tappa 5.1) ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_documents_delega_alla_gestione(monkeypatch):
+    async def fake_elenca(tenant_id):
+        return "Documenti importati in memoria:\n- [doc-1] fattura.pdf — tipo fattura"
+
+    monkeypatch.setattr(tools.gestione_documenti, "elenca_documenti", fake_elenca)
+
+    risultato = await tools._list_documents(TENANT)
+
+    assert "fattura.pdf" in risultato
+
+
+@pytest.mark.asyncio
+async def test_get_document_inesistente_messaggio_pulito(monkeypatch):
+    async def fake_descrivi(tenant_id, documento_id):
+        raise tools.ErroreGestioneDocumento(f"Documento {documento_id} non trovato tra i documenti importati.")
+
+    monkeypatch.setattr(tools.gestione_documenti, "descrivi_documento", fake_descrivi)
+
+    risultato = await tools._get_document(TENANT, "doc-fantasma")
+
+    assert "non trovato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_forget_document_crea_azione_pending_senza_eliminare(monkeypatch):
+    """Dimenticare un documento e' distruttivo (perdita di dati: memoria,
+    archivio, fatti): passa dal gate azioni_pending come le altre
+    cancellazioni - il tool NON elimina mai direttamente."""
+    async def fake_get_documento(tenant_id, documento_id):
+        return {
+            "id": documento_id, "source_type": "drive_file", "source_id": "f-1",
+            "categoria": "fattura", "storage_path": f"{TENANT}/doc-9/fattura_rossi.pdf",
+            "created_at": "2026-07-16T10:00:00+00:00", "stato": "completo",
+        }
+
+    monkeypatch.setattr(tools.memoria_db, "get_documento", fake_get_documento)
+
+    creata = {}
+
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        creata["tipo"] = tipo
+        creata["payload"] = payload
+        return "azione-1"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    dimenticato = {"si": False}
+
+    async def fake_dimentica(tenant_id, documento_id):
+        dimenticato["si"] = True
+
+    monkeypatch.setattr(tools.gestione_documenti, "dimentica_documento", fake_dimentica)
+
+    risultato = await tools._forget_document(TENANT, "doc-9")
+
+    assert creata["tipo"] == azioni.TIPO_FORGET_DOCUMENT
+    assert creata["payload"] == {"documento_id": "doc-9"}
+    assert dimenticato["si"] is False  # mai eseguito direttamente dal tool
+    assert "attesa di conferma" in risultato
+    assert "fattura_rossi.pdf" in risultato  # l'utente sa COSA sta per eliminare
+
+
+@pytest.mark.asyncio
+async def test_forget_document_inesistente_non_crea_azione(monkeypatch):
+    async def fake_get_documento(tenant_id, documento_id):
+        return None
+
+    monkeypatch.setattr(tools.memoria_db, "get_documento", fake_get_documento)
+
+    creata = {"si": False}
+
+    async def fake_crea_azione(*args):
+        creata["si"] = True
+        return "azione-x"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._forget_document(TENANT, "doc-fantasma")
+
+    assert "non trovato" in risultato
+    assert creata["si"] is False
+
+
+@pytest.mark.asyncio
+async def test_forget_document_rifiuta_righe_non_importate(monkeypatch):
+    """Le righe interne (mail/eventi/fatti indicizzati) non si dimenticano
+    da qui: romperebbe gli altri flussi di memoria."""
+    async def fake_get_documento(tenant_id, documento_id):
+        return {"id": documento_id, "source_type": "fatto", "source_id": "rossi_srl", "storage_path": None}
+
+    monkeypatch.setattr(tools.memoria_db, "get_documento", fake_get_documento)
+
+    creata = {"si": False}
+
+    async def fake_crea_azione(*args):
+        creata["si"] = True
+        return "azione-x"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._forget_document(TENANT, "doc-fatto")
+
+    assert creata["si"] is False
+    assert "non trovato" in risultato

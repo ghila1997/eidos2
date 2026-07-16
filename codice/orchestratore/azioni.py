@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from common.supabase_rest import rest_headers, supabase_settings
+from memoria import gestione_documenti
 from . import calendar_client, drive_client, gmail_client
 
 TIPO_SEND_EMAIL = "send_email"
@@ -22,6 +23,7 @@ TIPO_UPDATE_EVENT = "update_event"
 TIPO_DELETE_EVENT = "delete_event"
 TIPO_SHARE_FILE = "share_file"
 TIPO_TRASH_FILE = "trash_file"
+TIPO_FORGET_DOCUMENT = "forget_document"
 
 STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
@@ -204,6 +206,10 @@ async def _esegui_trash_file(tenant_id: str, payload: dict[str, Any]) -> None:
     await drive_client.cestina_file(access_token, payload["file_id"])
 
 
+async def _esegui_forget_document(tenant_id: str, payload: dict[str, Any]) -> None:
+    await gestione_documenti.dimentica_documento(tenant_id, payload["documento_id"])
+
+
 _ESECUTORI = {
     TIPO_SEND_EMAIL: _esegui_send_email,
     TIPO_REPLY_EMAIL: _esegui_reply_email,
@@ -215,4 +221,5 @@ _ESECUTORI = {
     TIPO_DELETE_EVENT: _esegui_delete_event,
     TIPO_SHARE_FILE: _esegui_share_file,
     TIPO_TRASH_FILE: _esegui_trash_file,
+    TIPO_FORGET_DOCUMENT: _esegui_forget_document,
 }

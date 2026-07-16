@@ -5,19 +5,42 @@ import pytest
 from memoria import document_extraction
 
 
+class _FakeStream:
+    """Il percorso visione usa client.messages.stream(...) (trascrizioni
+    lunghe, vedi document_extraction.py) - il fake espone lo stesso
+    contratto: async context manager + get_final_message()."""
+
+    def __init__(self, message):
+        self._message = message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get_final_message(self):
+        return self._message
+
+
 class _FakeMessages:
-    def __init__(self, content):
+    def __init__(self, content, stop_reason="tool_use"):
         self._content = content
+        self._stop_reason = stop_reason
         self.ultima_chiamata: dict | None = None
 
     async def create(self, **kwargs):
         self.ultima_chiamata = kwargs
-        return SimpleNamespace(content=self._content)
+        return SimpleNamespace(content=self._content, stop_reason=self._stop_reason)
+
+    def stream(self, **kwargs):
+        self.ultima_chiamata = kwargs
+        return _FakeStream(SimpleNamespace(content=self._content, stop_reason=self._stop_reason))
 
 
 class _FakeAnthropic:
-    def __init__(self, content):
-        self.messages = _FakeMessages(content)
+    def __init__(self, content, stop_reason="tool_use"):
+        self.messages = _FakeMessages(content, stop_reason)
 
 
 def _blocco_tool_use(input_dict):
@@ -87,3 +110,18 @@ async def test_senza_tool_use_solleva_errore(monkeypatch):
 
     with pytest.raises(RuntimeError):
         await document_extraction.estrai_da_testo("qualcosa")
+
+
+@pytest.mark.asyncio
+async def test_visione_troncata_solleva_errore_esplicito(monkeypatch):
+    """Se la trascrizione sfonda max_tokens il JSON del tool è mutilato:
+    meglio un errore esplicito che indicizzare una trascrizione a metà
+    spacciandola per completa."""
+    fake = _FakeAnthropic(
+        [_blocco_tool_use({"tipo_documento": "contratto", "campi": {}, "testo_completo": "troncat"})],
+        stop_reason="max_tokens",
+    )
+    monkeypatch.setattr(document_extraction.anthropic, "AsyncAnthropic", lambda: fake)
+
+    with pytest.raises(RuntimeError, match="tronc"):
+        await document_extraction.estrai_da_documento_visivo(b"%PDF-finto", "application/pdf")

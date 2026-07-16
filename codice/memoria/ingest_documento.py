@@ -23,10 +23,13 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
+import anthropic
+
 from memoria import db as memoria_db
+from memoria import fatti_indicizzazione
 from orchestratore import chunking, embeddings
 
-from . import document_extraction, file_extraction, storage
+from . import document_extraction, file_extraction, image_normalization, storage
 
 MIME_PDF = "application/pdf"
 MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -40,6 +43,12 @@ FONTI = ("gmail_attachment", "drive_file", "locale")
 # documento da ricordare" (vedi discussione di design).
 MAX_PAGINE_VISIONE = 20
 MAX_DIMENSIONE_FILE = 20 * 1024 * 1024
+
+# Cap sull'input del modello di estrazione campi (Haiku): un XLSX enorme
+# produce milioni di caratteri e sfonderebbe il contesto con un 400. Vale
+# SOLO per l'estrazione campi - la ricerca semantica indicizza sempre il
+# testo completo, nessuna informazione persa.
+MAX_CARATTERI_ESTRAZIONE = 100_000
 
 
 class ErroreIngestDocumento(Exception):
@@ -60,13 +69,26 @@ def _sanitizza_testo(testo: str) -> str:
     return testo.replace("\x00", "")
 
 
+async def _estrai_con_cap(testo: str) -> document_extraction.Estrazione:
+    return await document_extraction.estrai_da_testo(testo[:MAX_CARATTERI_ESTRAZIONE])
+
+
 async def _estrai_testo_e_campi(contenuto: bytes, mime_type: str) -> tuple[str, document_extraction.Estrazione]:
     """Decide il percorso (locale+Haiku economico vs Sonnet visione) e
     ritorna (testo_per_ricerca_semantica, campi_estratti)."""
     if mime_type == MIME_PDF:
-        if file_extraction.pdf_ha_testo_digitale(contenuto):
+        if file_extraction.pdf_e_cifrato(contenuto):
+            raise ErroreIngestDocumento(
+                "il PDF è protetto da password - rimuovi la protezione e riprova."
+            )
+        # Percorso digitale solo se c'è testo E nessuna pagina è una
+        # scansione (pagina senza testo ma con immagini): un PDF misto
+        # (copertina digitale + allegati scannerizzati) perderebbe in
+        # silenzio le pagine scansionate.
+        pagine_scansione = file_extraction.indici_pagine_scansione(contenuto)
+        if file_extraction.pdf_ha_testo_digitale(contenuto) and not pagine_scansione:
             testo = file_extraction.estrai_testo_pdf(contenuto)
-            return testo, await document_extraction.estrai_da_testo(testo)
+            return testo, await _estrai_con_cap(testo)
         try:
             pagine = file_extraction.numero_pagine_pdf(contenuto)
         except Exception:
@@ -80,17 +102,28 @@ async def _estrai_testo_e_campi(contenuto: bytes, mime_type: str) -> tuple[str, 
         estrazione = await document_extraction.estrai_da_documento_visivo(contenuto, mime_type)
         return estrazione.get("testo_completo", ""), estrazione
     if mime_type.startswith("image/"):
-        estrazione = await document_extraction.estrai_da_documento_visivo(contenuto, mime_type)
+        # HEIC da iPhone, TIFF da scanner, foto oltre i limiti API: si
+        # normalizza localmente SOLO per la chiamata di visione - hash,
+        # dedup e archivio usano sempre i byte originali del chiamante.
+        try:
+            normalizzato, mime_normalizzato = image_normalization.normalizza_per_visione(
+                contenuto, mime_type
+            )
+        except image_normalization.ErroreImmagineNonLeggibile as exc:
+            raise ErroreIngestDocumento(f"immagine non importabile: {exc}") from exc
+        estrazione = await document_extraction.estrai_da_documento_visivo(
+            normalizzato, mime_normalizzato
+        )
         return estrazione.get("testo_completo", ""), estrazione
     if mime_type == MIME_DOCX:
         testo = file_extraction.estrai_testo_docx(contenuto)
-        return testo, await document_extraction.estrai_da_testo(testo)
+        return testo, await _estrai_con_cap(testo)
     if mime_type == MIME_XLSX:
         testo = file_extraction.estrai_testo_xlsx(contenuto)
-        return testo, await document_extraction.estrai_da_testo(testo)
+        return testo, await _estrai_con_cap(testo)
     if mime_type.startswith("text/"):
         testo = contenuto.decode("utf-8", errors="replace")
-        return testo, await document_extraction.estrai_da_testo(testo)
+        return testo, await _estrai_con_cap(testo)
     raise ErroreIngestDocumento(f"Formato non supportato per l'importazione in memoria: {mime_type}")
 
 
@@ -99,40 +132,26 @@ async def _aggiorna_fatto_documento(
     tipo_documento: str, campi: dict[str, str],
 ) -> None:
     """Upsert in memoria_fatti (array 'documenti', separato da 'note' di
-    remember_fact) + rigenera il chunk embedded del fatto, stesso pattern
-    di orchestratore/tools.py _remember_fact ma per documenti invece di
-    note manuali - non refactorizzato in comune per non toccare codice
-    Tappa 2/4 già validato senza necessità funzionale (vedi CLAUDE.md)."""
+    remember_fact) + re-indicizzazione del fatto (fatti_indicizzazione.py,
+    condivisa con gestione_documenti). La voce con lo stesso documento_id
+    viene SOSTITUITA, mai accumulata: su un documento aggiornato (stesso
+    source, contenuto cambiato) la voce vecchia con i campi ormai sbagliati
+    resterebbe per sempre come se fosse attuale - trovato rivalutando la
+    Tappa 5."""
     entity_key = _slug_entity(entity_nome)
     esistente = await memoria_db.get_fatto(tenant_id, entity_key)
     note = list(esistente["data"].get("note", [])) if esistente else []
     documenti = list(esistente["data"].get("documenti", [])) if esistente else []
+    documenti = [d for d in documenti if d.get("documento_id") != documento_id]
     documenti.append({
         "documento_id": documento_id,
         "tipo_documento": tipo_documento,
         "campi": campi,
         "salvato_il": datetime.now(timezone.utc).isoformat(),
     })
-    await memoria_db.upsert_fatto(
-        tenant_id, entity_key, entity_tipo,
-        {"nome": entity_nome, "note": note, "documenti": documenti},
-    )
-
-    testo_fatto = f"{entity_nome}: " + " | ".join(n["testo"] for n in note)
-    testo_fatto += " | " + " | ".join(
-        f"{d['tipo_documento']} ({d['documento_id']}): {d['campi']}" for d in documenti
-    )
-    documento_fatto = await memoria_db.find_documento_by_source(tenant_id, "fatto", entity_key)
-    if documento_fatto is None:
-        content_hash = hashlib.sha256(testo_fatto.encode("utf-8")).hexdigest()
-        documento_fatto_id = await memoria_db.insert_documento(
-            tenant_id, "fatto", entity_key, content_hash, entity_tipo, None
-        )
-    else:
-        documento_fatto_id = documento_fatto["id"]
-        await memoria_db.elimina_chunk_documento(tenant_id, documento_fatto_id)
-    embedding = (await embeddings.embed_documenti([testo_fatto]))[0]
-    await memoria_db.insert_chunk(tenant_id, documento_fatto_id, 0, testo_fatto, embedding)
+    data = {"nome": entity_nome, "note": note, "documenti": documenti}
+    await memoria_db.upsert_fatto(tenant_id, entity_key, entity_tipo, data)
+    await fatti_indicizzazione.reindicizza_fatto(tenant_id, entity_key, entity_tipo, data)
 
 
 async def importa_documento(
@@ -153,28 +172,47 @@ async def importa_documento(
 
     content_hash = hashlib.sha256(contenuto).hexdigest()
     per_hash = await memoria_db.find_documento_by_hash(tenant_id, content_hash)
-    if per_hash is not None:
+    if per_hash is not None and per_hash.get("stato", "completo") == "completo":
         # Vero duplicato: stesso contenuto, anche da una fonte diversa
-        # (dedup cross-origine, es. stesso PDF via mail e via Drive).
+        # (dedup cross-origine, es. stesso PDF via mail e via Drive). Un
+        # record NON completo (import interrotto a metà) non conta come
+        # duplicato: sarebbe una perdita silenziosa e permanente - la riga
+        # esiste ma niente è ricercabile (trappola reale, successa durante
+        # i test della Tappa 5).
         return f"Documento già presente in memoria (id {per_hash['id']}), non re-importato."
 
     per_source = await memoria_db.find_documento_by_source(tenant_id, fonte, source_id)
-    testo, estrazione = await _estrai_testo_e_campi(contenuto, mime_type)
+    # Riga da aggiornare invece che inserire: stesso source (file modificato
+    # e re-importato) oppure un import interrotto con gli stessi byte (anche
+    # da altra fonte: il vincolo unico su content_hash impedisce comunque una
+    # seconda riga - si ripara quella).
+    da_aggiornare = per_source or per_hash
+
+    try:
+        testo, estrazione = await _estrai_testo_e_campi(contenuto, mime_type)
+    except ErroreIngestDocumento:
+        raise
+    except anthropic.AnthropicError as exc:
+        # Errore API (rete, rate limit, richiesta rifiutata): messaggio
+        # pulito al modello/utente, non un traceback grezzo.
+        raise ErroreIngestDocumento(
+            f"estrazione non riuscita per un errore del servizio "
+            f"({exc.__class__.__name__}), riprova tra poco."
+        ) from exc
+    except RuntimeError as exc:
+        raise ErroreIngestDocumento(f"estrazione non riuscita: {exc}") from exc
     testo = _sanitizza_testo(testo)
     tipo_documento = estrazione.get("tipo_documento", "altro")
 
-    if per_source is not None:
-        # Stesso source_id (es. stesso file Drive) ma hash diverso: il file è
-        # stato modificato e re-importato. Non un duplicato da ignorare (dati
-        # ormai vecchi) né un nuovo documento (violerebbe il vincolo unico su
-        # source_id) - si aggiorna lo stesso record: nuovo hash/contenuto,
-        # chunk rigenerati, file su Storage sovrascritto.
-        documento_id = per_source["id"]
+    if da_aggiornare is not None:
+        documento_id = da_aggiornare["id"]
         await memoria_db.update_documento(tenant_id, documento_id, content_hash, tipo_documento, None)
         await memoria_db.elimina_chunk_documento(tenant_id, documento_id)
     else:
+        # stato "in_corso" fino a fine ingest: se si crasha a metà, il
+        # dedup per hash non maschererà il retry (vedi sopra).
         documento_id = await memoria_db.insert_documento(
-            tenant_id, fonte, source_id, content_hash, tipo_documento, None
+            tenant_id, fonte, source_id, content_hash, tipo_documento, None, stato="in_corso"
         )
 
     storage_path = storage.path_storage(tenant_id, documento_id, nome_file)
@@ -194,6 +232,8 @@ async def importa_documento(
             tenant_id, entity_nome, estrazione.get("entity_tipo", "fornitore"),
             documento_id, tipo_documento, estrazione.get("campi", {}),
         )
+    await memoria_db.segna_documento_completo(tenant_id, documento_id)
+    if entity_nome:
         return (
             f"Documento {verbo} (id {documento_id}, tipo {tipo_documento}): "
             f"ricercabile in memoria e collegato all'entità '{entity_nome}'."

@@ -44,6 +44,50 @@ def numero_pagine_pdf(contenuto: bytes) -> int:
     return len(pypdf.PdfReader(io.BytesIO(contenuto)).pages)
 
 
+def pdf_e_cifrato(contenuto: bytes) -> bool:
+    """Un PDF protetto da password va rifiutato con un messaggio chiaro
+    PRIMA del routing: pypdf estrarrebbe stringa vuota (=> "scansione") e
+    l'API rifiuterebbe il documento cifrato con un errore grezzo. Un file
+    corrotto NON e' "cifrato": segue il percorso normale."""
+    try:
+        return bool(pypdf.PdfReader(io.BytesIO(contenuto)).is_encrypted)
+    except Exception:
+        return False
+
+
+# Sotto questa soglia di caratteri una SINGOLA pagina è considerata senza
+# testo utile (cfr. SOGLIA_TESTO_DIGITALE che vale sul totale).
+SOGLIA_TESTO_PAGINA = 25
+
+
+def indici_pagine_scansione(contenuto: bytes) -> list[int]:
+    """Pagine senza testo utile MA con immagini: quasi certamente pagine
+    scansionate dentro un PDF altrimenti digitale (es. contratto con
+    copertina digitale + allegati scannerizzati). Il routing per soglia sul
+    testo TOTALE le classificherebbe "digitali" perdendole in silenzio -
+    trappola trovata rivalutando la Tappa 5. Una pagina bianca (niente
+    testo, niente immagini) non conta: è comune e innocua."""
+    try:
+        lettore = pypdf.PdfReader(io.BytesIO(contenuto))
+    except Exception:
+        return []
+    indici = []
+    for indice, pagina in enumerate(lettore.pages):
+        try:
+            testo = (pagina.extract_text() or "").strip()
+        except Exception:
+            testo = ""
+        if len(testo) >= SOGLIA_TESTO_PAGINA:
+            continue
+        try:
+            ha_immagini = bool(pagina.images)
+        except Exception:
+            ha_immagini = False
+        if ha_immagini:
+            indici.append(indice)
+    return indici
+
+
 def estrai_testo_docx(contenuto: bytes) -> str:
     documento = Document(io.BytesIO(contenuto))
     paragrafi = [p.text for p in documento.paragraphs if p.text.strip()]

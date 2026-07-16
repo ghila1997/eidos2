@@ -145,6 +145,29 @@
   reale da locale): entità riconosciute, campi estratti, dedup e aggiornamento in place
   confermati, tre bug reali trovati e corretti (vedi DECISIONS.md)
 
+### Tappa 5.1 — rivalutazione documenti (ciclo di vita, atomicità, casi reali) — ✅ fatto (2026-07-16)
+
+- Rivalutazione sistematica della Tappa 5 su richiesta dell'utente ("buchi o scelte sbagliate
+  per un prodotto completo?"), tutto in TDD e verificato end-to-end contro i servizi veri —
+  dettaglio completo in DECISIONS.md, "Tappa 5.1: rivalutazione del modulo documenti"
+- Ciclo di vita completo: `list_documents`, `get_document` (link firmato temporaneo
+  all'originale), `forget_document` (distruttivo → azione pending; rimuove ricerca, archivio
+  Storage e voce nei fatti collegati)
+- Bug corretto: voce duplicata/stantia nell'array `documenti` del fatto su documento aggiornato
+- Atomicità ingest: colonna `stato` (`in_corso`/`completo`) — un ingest interrotto non maschera
+  più il retry come "già presente" (migration `20260716180000`)
+- Robustezza casi reali: HEIC/TIFF/foto oversize normalizzate localmente (Pillow+pillow-heif),
+  PDF misti (pagine scansionate dentro PDF digitali) al percorso visivo invece di perderle,
+  PDF cifrati rifiutati con messaggio chiaro, trascrizioni visive in streaming con controllo
+  troncamento, cap sull'estrazione campi per testi enormi, errori API con messaggio pulito,
+  `source_id` Gmail stabile (`message_id:filename`)
+- Eval del comportamento agentico introdotti (arretrato CLAUDE.md):
+  `codice/memoria/eval/eval_estrazione.py`, 3/3 PASS reali — registro in `docs/eval.md`
+- **Finito quando**: elencare/riscaricare/dimenticare un documento reale funziona end-to-end e
+  "dimenticare" non lascia tracce (riga, chunk, storage, fatti) — ✅ verificato 2026-07-16 con
+  test reali su Supabase/Anthropic/Voyage veri (9/9 scenari PASS, incluso il filtro jsonb dei
+  fatti collegati e il download via URL firmato con byte identici)
+
 ## Tappa 6 — Voce
 
 - STT/TTS, progettati da zero (nessuna decisione ereditata da Eidos v1)

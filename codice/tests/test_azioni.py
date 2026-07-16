@@ -337,3 +337,45 @@ async def test_conferma_trash_file_chiama_cestina_file(respx_mock, monkeypatch):
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiamate == ["f-1"]
+
+
+@pytest.mark.asyncio
+async def test_conferma_forget_document_chiama_dimentica(respx_mock, monkeypatch):
+    """Tappa 5.1: dimenticare un documento passa dallo stesso gate delle
+    altre azioni distruttive - solo la conferma esplicita dell'utente
+    esegue la cancellazione vera."""
+    payload = {"documento_id": "doc-9"}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_FORGET_DOCUMENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamate = []
+
+    async def fake_dimentica(tenant_id, documento_id):
+        chiamate.append((tenant_id, documento_id))
+        return "dimenticato"
+
+    monkeypatch.setattr(azioni.gestione_documenti, "dimentica_documento", fake_dimentica)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamate == [(TENANT_A, "doc-9")]
+
+
+@pytest.mark.asyncio
+async def test_conferma_no_su_forget_document_non_elimina(respx_mock, monkeypatch):
+    payload = {"documento_id": "doc-9"}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_FORGET_DOCUMENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiamato = {"si": False}
+
+    async def fake_dimentica(*args):
+        chiamato["si"] = True
+
+    monkeypatch.setattr(azioni.gestione_documenti, "dimentica_documento", fake_dimentica)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=False)
+
+    assert risultato["stato"] == azioni.STATO_RIFIUTATA
+    assert chiamato["si"] is False

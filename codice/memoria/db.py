@@ -152,13 +152,16 @@ async def insert_documento(
     categoria: str,
     priorita: str,
     storage_path: str | None = None,
+    stato: str = "completo",
 ) -> str:
     """Inserisce il documento sorgente. Il chiamante deve aver già verificato
     che non esiste (find_documento_by_hash / find_documento_by_source) —
     dedup cross-origine è una decisione applicativa, non lasciata a un solo
     vincolo DB (vedi idea salvata su Memoria in notes/). storage_path è
     valorizzato solo per i documenti Tappa 5 (file originale archiviato in
-    Supabase Storage) — resta null per mail/eventi/fatti."""
+    Supabase Storage) — resta null per mail/eventi/fatti. stato="in_corso"
+    è usato dall'ingest documenti per non far contare come duplicato un
+    import interrotto a metà (vedi memoria/ingest_documento.py)."""
     url, key = supabase_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -172,6 +175,7 @@ async def insert_documento(
                 "categoria": categoria,
                 "priorita": priorita,
                 "storage_path": storage_path,
+                "stato": stato,
             },
         )
     resp.raise_for_status()
@@ -186,16 +190,102 @@ async def update_documento(
     Non un nuovo insert: (tenant_id, source_type, source_id) è vincolato
     unico, e semanticamente è lo stesso documento aggiornato, non uno
     nuovo — il chiamante ri-genera chunk/estrazione sullo stesso
-    documento_id (vedi memoria/ingest_documento.py)."""
+    documento_id (vedi memoria/ingest_documento.py). Rimette stato
+    "in_corso": torna "completo" solo a fine ingest
+    (segna_documento_completo), così un aggiornamento interrotto a metà
+    non si maschera da riuscito."""
     url, key = supabase_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.patch(
             f"{url}/rest/v1/memoria_documenti",
             params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
             headers=rest_headers(key),
-            json={"content_hash": content_hash, "categoria": categoria, "priorita": priorita},
+            json={
+                "content_hash": content_hash,
+                "categoria": categoria,
+                "priorita": priorita,
+                "stato": "in_corso",
+            },
         )
     resp.raise_for_status()
+
+
+async def segna_documento_completo(tenant_id: str, documento_id: str) -> None:
+    """Ultimo passo dell'ingest: solo da qui in poi il documento conta per
+    il dedup per hash (vedi memoria/ingest_documento.py)."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{url}/rest/v1/memoria_documenti",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+            json={"stato": "completo"},
+        )
+    resp.raise_for_status()
+
+
+async def get_documento(tenant_id: str, documento_id: str) -> dict | None:
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_documenti",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else None
+
+
+async def list_documenti_importati(tenant_id: str) -> list[dict]:
+    """Solo i documenti importati esplicitamente (import_document), non le
+    righe interne di mail/eventi/fatti indicizzati - il ciclo di vita
+    esposto all'utente (list/forget) riguarda solo i primi."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_documenti",
+            params={
+                "tenant_id": f"eq.{tenant_id}",
+                "source_type": "in.(gmail_attachment,drive_file,locale)",
+                "select": "id,source_type,source_id,categoria,storage_path,created_at,stato",
+                "order": "created_at.desc",
+                "limit": "100",
+            },
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def delete_documento(tenant_id: str, documento_id: str) -> None:
+    """Elimina la riga del documento; i chunk seguono via FK on delete
+    cascade (vedi migration 20260713180000)."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"{url}/rest/v1/memoria_documenti",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+
+
+async def find_fatti_con_documento(tenant_id: str, documento_id: str) -> list[dict]:
+    """Fatti la cui data->documenti contiene una voce per questo documento -
+    usata quando un documento viene dimenticato, per non lasciare voci
+    orfane che mostrerebbero per sempre campi di un documento eliminato.
+    Filtro jsonb 'contains' (@>) via PostgREST cs."""
+    url, key = supabase_settings()
+    filtro = f'cs.{{"documenti":[{{"documento_id":"{documento_id}"}}]}}'
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_fatti",
+            params={"tenant_id": f"eq.{tenant_id}", "data": filtro},
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def set_storage_path(tenant_id: str, documento_id: str, storage_path: str) -> None:

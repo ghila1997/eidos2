@@ -11,9 +11,13 @@ Sessione locale separata dall'Orchestratore server-side (Railway non ha accesso 
 filesystem del founder). Dalla Tappa 5: importa un file locale in Memoria (`import_document`)
 — PDF/DOCX/XLSX/immagini, stessa pipeline condivisa con l'Orchestratore
 (`memoria/ingest_documento.py`), chiama direttamente Supabase come già fa `perimetro.py`,
-nessuna richiesta HTTP verso l'Orchestratore. NON fa: terminale, browser (restano
-"pianificato" in PROJECT.md), sandboxing OS-level (mitigazione attuale resta la conferma
-obbligatoria, vedi ROADMAP.md "Esplicitamente rimandato").
+nessuna richiesta HTTP verso l'Orchestratore. La pipeline condivisa include anche le
+robustezze della Tappa 5.1 (immagini HEIC/TIFF/oversize normalizzate, PDF misti/cifrati
+gestiti, ingest atomico). NON fa: terminale, browser (restano "pianificato" in PROJECT.md),
+sandboxing OS-level (mitigazione attuale resta la conferma obbligatoria, vedi ROADMAP.md
+"Esplicitamente rimandato"), ciclo di vita dei documenti importati (elencare/riscaricare/
+dimenticare si fa dalla chat dell'Orchestratore — `list_documents`/`get_document`/
+`forget_document`, stesso DB).
 
 ## Interfacce
 

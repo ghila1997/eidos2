@@ -35,8 +35,16 @@ from datetime import date, datetime, timedelta, timezone
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from memoria import db as memoria_db
-from memoria import file_extraction
-from memoria.ingest_documento import MIME_DOCX, MIME_PDF, MIME_XLSX, ErroreIngestDocumento, importa_documento
+from memoria import file_extraction, gestione_documenti
+from memoria.gestione_documenti import ErroreGestioneDocumento
+from memoria.ingest_documento import (
+    FONTI,
+    MIME_DOCX,
+    MIME_PDF,
+    MIME_XLSX,
+    ErroreIngestDocumento,
+    importa_documento,
+)
 
 from . import azioni, calendar_client, drive_client, embeddings, gmail_client
 from .safety import supervisor
@@ -471,7 +479,11 @@ async def _import_document(
             contenuto, meta = await _scarica_allegato_con_meta(tenant_id, message_id, attachment_id)
         except gmail_client.GmailError as exc:
             return f"Errore nel recuperare l'allegato, riprova o segnalalo: {exc}"
-        nome_file, mime_type, source_id = meta["filename"], meta["mime_type"], f"{message_id}:{attachment_id}"
+        # source_id stabile: message_id + filename. MAI l'attachment_id, che
+        # su Gmail vero cambia a ogni fetch (vedi _scarica_allegato_con_meta):
+        # con l'id instabile dentro il source_id il match per source non
+        # scatterebbe mai su un re-import.
+        nome_file, mime_type, source_id = meta["filename"], meta["mime_type"], f"{message_id}:{meta['filename']}"
     elif fonte == "drive_file":
         if not file_id:
             return "Serve file_id per importare un file Drive."
@@ -493,6 +505,49 @@ async def _import_document(
         return await importa_documento(tenant_id, fonte, source_id, nome_file, contenuto, mime_type)
     except ErroreIngestDocumento as exc:
         return f"Non importato: {exc}"
+
+
+async def _list_documents(tenant_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "list_documents", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    return await gestione_documenti.elenca_documenti(tenant_id)
+
+
+async def _get_document(tenant_id: str, documento_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "get_document", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        return await gestione_documenti.descrivi_documento(tenant_id, documento_id)
+    except ErroreGestioneDocumento as exc:
+        return str(exc)
+
+
+async def _forget_document(tenant_id: str, documento_id: str) -> str:
+    """Dimenticare un documento è distruttivo (perdita di dati: ricerca,
+    archivio, fatti collegati): crea un'azione in attesa, la cancellazione
+    vera avviene solo alla conferma esplicita dell'utente (azioni.py) -
+    stesso gate di trash_email/trash_file."""
+    documento = await memoria_db.get_documento(tenant_id, documento_id)
+    if documento is None or documento["source_type"] not in FONTI:
+        return (
+            f"Documento {documento_id} non trovato tra i documenti importati "
+            "(usa list_documents per vedere quelli disponibili)."
+        )
+    if rifiuto := await _autorizza(tenant_id, "forget_document", supervisor.CATEGORIA_DISTRUTTIVA):
+        return f"Azione non consentita: {rifiuto['message']}"
+
+    if documento.get("storage_path"):
+        nome_file = documento["storage_path"].rsplit("/", 1)[-1]
+    else:
+        nome_file = documento["source_id"]
+    azione_id = await azioni.crea_azione_pending(
+        tenant_id, azioni.TIPO_FORGET_DOCUMENT, {"documento_id": documento_id}
+    )
+    return (
+        f"Azione in attesa di conferma (id {azione_id}): eliminazione del documento "
+        f"'{nome_file}' dalla memoria (ricerca semantica, archivio originale e fatti "
+        "collegati). L'utente deve confermare esplicitamente prima che avvenga."
+    )
 
 
 # --- Distruttive: creano un'azione in attesa, mai eseguite subito --------
@@ -1010,6 +1065,38 @@ def crea_server(tenant_id: str):
             attachment_id=args.get("attachment_id"), file_id=args.get("file_id"),
         ))
 
+    @tool(
+        "list_documents",
+        "Elenca i documenti importati in memoria con import_document (id, nome file, tipo, fonte, data).",
+        {},
+    )
+    async def list_documents(args: dict) -> dict:
+        return _testo(await _list_documents(tenant_id))
+
+    @tool(
+        "get_document",
+        (
+            "Dettagli di un documento importato in memoria (per documento_id, "
+            "usa prima list_documents): metadati e link temporaneo per "
+            "scaricare il file originale archiviato."
+        ),
+        {"documento_id": str},
+    )
+    async def get_document(args: dict) -> dict:
+        return _testo(await _get_document(tenant_id, args["documento_id"]))
+
+    @tool(
+        "forget_document",
+        (
+            "Elimina un documento importato dalla memoria (ricerca, archivio "
+            "originale e fatti collegati). Distruttivo: crea un'azione in "
+            "attesa, l'utente deve confermare esplicitamente."
+        ),
+        {"documento_id": str},
+    )
+    async def forget_document(args: dict) -> dict:
+        return _testo(await _forget_document(tenant_id, args["documento_id"]))
+
     # --- Calendario ---------------------------------------------------
 
     @tool(
@@ -1350,7 +1437,7 @@ def crea_server(tenant_id: str):
         tools=[
             search_memoria, remember_fact, draft_email, send_email, reply_email, forward_email,
             send_draft, trash_email, mark_email, organize_email, list_labels, list_attachments, get_attachment,
-            import_document,
+            import_document, list_documents, get_document, forget_document,
             search_events, check_availability, respond_to_invite, create_event, update_event, delete_event,
             search_files, read_file, list_folder, create_folder, create_file, update_file_content,
             rename_file, move_file, copy_file, list_permissions, revoke_permission, share_file, trash_file,
@@ -1373,6 +1460,9 @@ ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__list_attachments",
     f"mcp__{SERVER_NAME}__get_attachment",
     f"mcp__{SERVER_NAME}__import_document",
+    f"mcp__{SERVER_NAME}__list_documents",
+    f"mcp__{SERVER_NAME}__get_document",
+    f"mcp__{SERVER_NAME}__forget_document",
     f"mcp__{SERVER_NAME}__search_events",
     f"mcp__{SERVER_NAME}__check_availability",
     f"mcp__{SERVER_NAME}__respond_to_invite",

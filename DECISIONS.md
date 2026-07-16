@@ -998,3 +998,88 @@ reale.
 una nuova funzione `update_documento`. Playbook/connettori.md - punto 4 ("verificare con dati
 veri") confermato ancora una volta come non negoziabile, non solo per i connettori ma per
 qualunque pipeline che tocchi un'API esterna o un formato di file reale.
+
+---
+
+## 2026-07-16 — Tappa 5.1: rivalutazione del modulo documenti — ciclo di vita completo, atomicità, casi reali che fallivano male
+
+**Contesto**: rivalutazione sistematica della Tappa 5 appena chiusa ("ci sono buchi o scelte
+sbagliate per un prodotto completo?"), richiesta esplicitamente dall'utente. La rilettura del
+codice con occhi freschi ha trovato un bug reale sfuggito, un buco di prodotto e una serie di
+casi reali gestiti male. Tutto costruito in TDD (test RED prima, implementazione dopo) e
+verificato end-to-end contro i servizi veri.
+
+**Bug reale trovato rileggendo (non dai test): voce duplicata nel fatto su documento
+aggiornato.** `_aggiorna_fatto_documento` faceva `documenti.append(...)` incondizionato: un
+documento re-importato con contenuto cambiato accumulava una seconda voce con lo stesso
+`documento_id`, e quella vecchia (con importi/scadenze ormai sbagliati) restava per sempre come
+se fosse attuale. È la stessa classe del Bug 3 della Tappa 5 (dati vecchi spacciati per
+attuali) un gradino più in là: i chunk venivano rigenerati, i campi estratti nel fatto no.
+**Fix**: la voce con lo stesso `documento_id` viene sostituita, mai accumulata.
+
+**Atomicità dell'ingest: colonna `stato` (`in_corso`/`completo`).** Un crash tra
+`insert_documento` e i chunk lasciava una riga con hash valorizzato ma zero chunk: ogni
+re-import diceva "già presente" mentre niente era ricercabile — perdita silenziosa e
+permanente (successa davvero durante i test della Tappa 5, ripulita a mano). Ora l'insert parte
+`in_corso`, diventa `completo` solo a fine pipeline; il dedup per hash considera solo i
+`completo`, e un record incompleto si ripara da solo al re-import (stesso source o stessi
+byte — il vincolo unico su hash impedisce comunque righe doppie). Scelta della colonna di stato
+invece del cleanup nell'`except`: regge anche un crash duro del processo. Migration
+`20260716180000_memoria_documenti_stato.sql` (default `completo`, nessun backfill).
+
+**Ciclo di vita completo (il buco di prodotto): l'archivio non è più in sola scrittura.**
+Prima esisteva solo `import_document`: nessun modo di elencare i documenti, riavere
+l'originale archiviato, o eliminarne uno (requisito anche privacy per un prodotto vendibile).
+Nuovi: `list_documents` e `get_document` (immediati; `get_document` genera un URL firmato
+temporaneo di Supabase Storage — 1 ora — per riscaricare l'originale) e `forget_document`
+(distruttivo → azione pending come le altre cancellazioni, `TIPO_FORGET_DOCUMENT` in
+`azioni.py`). Dimenticare rimuove: riga (chunk via FK cascade), file su Storage, e la voce
+nell'array `documenti` dei fatti collegati (trovati con filtro jsonb `cs`/`@>` via PostgREST,
+verificato contro il DB vero) con re-indicizzazione del fatto — la logica condivisa di
+re-indicizzazione è estratta in `memoria/fatti_indicizzazione.py` (usata da ingest e gestione;
+il gemello di `remember_fact` in `tools.py` resta com'è, codice Tappa 2/4 già validato).
+Moduli: `memoria/gestione_documenti.py`, nuove funzioni in `memoria/db.py` e
+`memoria/storage.py`.
+
+**Casi reali che fallivano male, ora gestiti** (limiti API verificati sulla doc ufficiale
+Vision il 2026-07-16, non a memoria — il limite immagini è oggi 10MB base64, non 5):
+- **HEIC (default iPhone), TIFF (scanner), foto oltre i limiti API**: normalizzazione locale
+  (`memoria/image_normalization.py`, Pillow + pillow-heif) → JPEG, lato lungo ≤2576px (tier
+  alta risoluzione di Sonnet 5: oltre, il server ridimensiona comunque — inviare di più è solo
+  costo). Solo per la chiamata di visione: hash, dedup e archivio usano sempre i byte originali.
+- **PDF misti** (copertina digitale + pagine scansionate): il routing sulla soglia di testo
+  TOTALE li classificava digitali perdendo le pagine scansionate in silenzio. Ora
+  `indici_pagine_scansione` (pagina senza testo MA con immagini = scansione) li manda al
+  percorso visivo; una pagina bianca senza immagini non conta (comune e innocua).
+- **PDF cifrati**: prima finivano al percorso visivo e l'API li rifiutava con un errore grezzo;
+  ora rifiuto esplicito "protetto da password" (`pdf_e_cifrato`).
+- **Trascrizioni visive lunghe**: `max_tokens` 4096 troncava il JSON del tool su scansioni di
+  15-20 pagine; ora streaming + 32k + errore esplicito se `stop_reason=max_tokens` (mai
+  indicizzare una trascrizione a metà spacciandola per completa).
+- **Testi enormi (XLSX)**: cap 100k caratteri sull'input dell'estrazione campi (Haiku
+  sfondava il contesto con 400); la ricerca semantica indicizza sempre il testo completo.
+- **Errori API Anthropic**: incapsulati in `ErroreIngestDocumento` con messaggio pulito, mai
+  traceback grezzo nel contesto del modello.
+- **`source_id` Gmail**: era `message_id:attachment_id`, ma l'attachment_id è instabile (Bug 1
+  Tappa 5) — il match per source non sarebbe MAI scattato. Ora `message_id:filename`.
+
+**Eval introdotti** (arretrato della regola CLAUDE.md "Verifica del comportamento agentico",
+Tappa 5 era stata chiusa senza): `codice/memoria/eval/eval_estrazione.py`, 3 scenari con verità
+nota (fattura chiara, nessuna entità, istruzione ostile iniettata nel documento), registrati in
+`docs/eval.md`. Prima esecuzione reale: 3/3 PASS.
+
+**Trappola nuova trovata col test reale**: dopo `forget_document` il file è eliminato da
+Storage, ma un URL firmato generato prima può continuare a servire una copia dalla cache CDN di
+Supabase fino alla scadenza TTL. La verifica di cancellazione va fatta sull'endpoint
+autenticato diretto (il primo test E3 falliva proprio per questo — la DELETE funzionava, il
+metodo di verifica no).
+
+**Nota sulla voce precedente**: la voce "Tappa 5: tre bug reali trovati testando con dati veri"
+documenta in realtà QUATTRO bug (il quarto, il byte NUL, è marcato "minore") — il titolo non si
+corregge perché questo file è append-only; fa fede il contenuto.
+
+**Rimandato consapevolmente** (non arretrati): PPTX e legacy .doc/.xls (costo di aggiunta basso
+a fondamenta fatte, si aggiungono al primo bisogno reale); normalizzazione delle ragioni
+sociali in `_slug_entity` ("Rossi Srl" vs "ROSSI S.R.L." creano fatti separati — problema
+pre-esistente di remember_fact, si affronta con un caso reale); ciclo di vita documenti
+dall'Agente Locale (si gestisce dalla chat dell'Orchestratore, stesso DB).

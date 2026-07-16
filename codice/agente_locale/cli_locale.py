@@ -16,10 +16,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# ANTHROPIC_API_KEY (usata da memoria/document_extraction.py per
+# import_document) vive nel .env di root, non in codice/.env (solo
+# Supabase + EIDOS_TENANT_ID) - vedi stesso fix in app.py.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from claude_agent_sdk import (  # noqa: E402
     AssistantMessage,

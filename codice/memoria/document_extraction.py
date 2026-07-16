@@ -28,6 +28,14 @@ import anthropic
 MODEL_TESTO = "claude-haiku-4-5-20251001"
 MODEL_VISIONE = "claude-sonnet-5"
 
+# Una scansione da 15-20 pagine (dentro MAX_PAGINE_VISIONE) produce una
+# trascrizione ben oltre i 4096 token: con un cap basso il JSON del tool
+# si tronca a meta'. Sonnet 5 supporta 64k di output; 32k copre il caso
+# peggiore realistico e si paga solo l'output effettivo. Con output cosi'
+# lunghi la chiamata va in streaming (richiesto/raccomandato dall'SDK per
+# richieste lunghe, evita i timeout).
+MAX_TOKENS_VISIONE = 32_000
+
 TIPI_DOCUMENTO = ("fattura", "contratto", "ricevuta", "altro")
 
 _TOOL_NAME = "estrai_campi"
@@ -147,9 +155,9 @@ async def estrai_da_documento_visivo(contenuto: bytes, mime_type: str) -> Estraz
             "required": ["tipo_documento", "campi", "testo_completo"],
         },
     }
-    message = await client.messages.create(
+    async with client.messages.stream(
         model=MODEL_VISIONE,
-        max_tokens=4096,
+        max_tokens=MAX_TOKENS_VISIONE,
         system=_SYSTEM_PROMPT,
         tools=[schema],
         tool_choice={"type": "tool", "name": _TOOL_NAME},
@@ -168,5 +176,13 @@ async def estrai_da_documento_visivo(contenuto: bytes, mime_type: str) -> Estraz
                 ],
             }
         ],
-    )
+    ) as stream:
+        message = await stream.get_final_message()
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        # JSON del tool mutilato: meglio un errore esplicito che indicizzare
+        # una trascrizione a meta' spacciandola per completa.
+        raise RuntimeError(
+            "trascrizione troncata: il documento è troppo lungo per essere "
+            "trascritto in una sola passata"
+        )
     return _estrai_da_risposta(message)
