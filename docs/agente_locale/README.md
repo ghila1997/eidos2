@@ -8,9 +8,11 @@ Dà al founder la possibilità di chiedere in linguaggio naturale un'azione real
 file/cartelle del suo PC (leggere, scrivere, cercare per contenuto, spostare/rinominare,
 creare cartelle, eliminare), dentro un perimetro di cartelle esplicitamente autorizzato.
 Sessione locale separata dall'Orchestratore server-side (Railway non ha accesso al
-filesystem del founder). NON fa: terminale, browser (restano "pianificato" in PROJECT.md),
-estrazione di contenuto da PDF/binari (Tappa 5), indicizzazione/ricerca semantica dei file
-(Tappa 5 — vedi ROADMAP.md), sandboxing OS-level (mitigazione attuale resta la conferma
+filesystem del founder). Dalla Tappa 5: importa un file locale in Memoria (`import_document`)
+— PDF/DOCX/XLSX/immagini, stessa pipeline condivisa con l'Orchestratore
+(`memoria/ingest_documento.py`), chiama direttamente Supabase come già fa `perimetro.py`,
+nessuna richiesta HTTP verso l'Orchestratore. NON fa: terminale, browser (restano
+"pianificato" in PROJECT.md), sandboxing OS-level (mitigazione attuale resta la conferma
 obbligatoria, vedi ROADMAP.md "Esplicitamente rimandato").
 
 ## Interfacce
@@ -20,8 +22,9 @@ obbligatoria, vedi ROADMAP.md "Esplicitamente rimandato").
   perimetro, comando diretto non esposto al modello)
 - **Consuma**: Claude Agent SDK (`ClaudeSDKClient`, sessione locale interattiva, non passa
   da `/chat`), Safety Supervisor (`codice/orchestratore/safety/`, via import diretto),
-  Supabase Postgres (tabella `perimetro_locale`, stesso `eidos2` usato dal resto del
-  prodotto)
+  Supabase Postgres+Storage (tabella `perimetro_locale`, stesso `eidos2` usato dal resto del
+  prodotto), `memoria/ingest_documento.py` (Tappa 5, import diretto — stesso pattern di
+  Safety Supervisor: import Python, non HTTP)
 
 ## Come funziona
 
@@ -35,7 +38,9 @@ obbligatoria, vedi ROADMAP.md "Esplicitamente rimandato").
   tool custom
 - `codice/agente_locale/tools.py` — tool custom MCP (`list_directory`, `move_file`,
   `delete_file`, `create_folder`): nessun equivalente nativo con un path verificabile (vedi
-  DECISIONS.md, "Agente Locale (Ciclo B): Glob escluso dai tool nativi")
+  DECISIONS.md, "Agente Locale (Ciclo B): Glob escluso dai tool nativi"); `import_document`
+  (Tappa 5) — ingest esplicito di un file locale in Memoria, dentro il perimetro autorizzato,
+  immediato (nessuna scrittura sul filesystem, solo lettura)
 - `codice/agente_locale/cli_locale.py` — entrypoint: `EIDOS_TENANT_ID` da `.env` locale
   (nessuna sessione a cookie qui), `cwd` fissata sulla prima cartella autorizzata
 
@@ -51,6 +56,9 @@ a singolo utente, la persona è già lì.
    esiste davvero con quel contenuto
 4. "leggi appunti.txt" → risposta immediata, nessuna conferma
 5. "scrivi qualcosa in C:\Windows\test.txt" → bloccato subito, nessuna conferma chiesta
+6. "importa fattura.pdf in memoria" (Tappa 5) → ingest esplicito, entità riconosciuta se
+   il documento ne nomina una chiaramente; "importa appunti.txt fuori dal perimetro" →
+   bloccato subito, nessuna conferma chiesta
 
 Test automatici: `codice/tests/test_perimetro.py`, `test_agente_locale_hook.py`,
 `test_agente_locale_tools.py`.
@@ -63,6 +71,8 @@ Test automatici: `codice/tests/test_perimetro.py`, `test_agente_locale_hook.py`,
 - DECISIONS.md 2026-07-16 — "System prompt degli agenti: allineati alle best practice correnti
   Anthropic" e "Trappola reale: Agente Locale chiedeva conferma in chat invece di far scattare
   il gate vero" (vedi sotto)
+- DECISIONS.md 2026-07-16 — "Tappa 5 (Memoria: estensione documenti): routing digitale/visivo
+  per minimizzare il costo" e "Tappa 5: tre bug reali trovati testando con dati veri"
 - ROADMAP.md — Tappa 3, "Perimetro di accesso"
 - playbook/system-prompt-agenti.md — struttura e best practice del system prompt di
   `_system_prompt` in `cli_locale.py`

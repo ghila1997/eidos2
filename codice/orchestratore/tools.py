@@ -35,6 +35,8 @@ from datetime import date, datetime, timedelta, timezone
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from memoria import db as memoria_db
+from memoria import file_extraction
+from memoria.ingest_documento import MIME_DOCX, MIME_PDF, MIME_XLSX, ErroreIngestDocumento, importa_documento
 
 from . import azioni, calendar_client, drive_client, embeddings, gmail_client
 from .safety import supervisor
@@ -60,6 +62,28 @@ def _fine_default(inizio: str, tutto_il_giorno: bool) -> str:
         return (giorno + timedelta(days=1)).isoformat()
     inizio_dt = datetime.fromisoformat(inizio.replace("Z", "+00:00"))
     return (inizio_dt + timedelta(hours=1)).isoformat()
+
+
+def _estrai_testo_lettura(nome_file: str, mime_type: str, dimensione: int, contenuto: bytes) -> str:
+    """Estrazione testo per la lettura immediata (get_attachment/read_file):
+    solo formati con estrazione locale gratuita (PDF con strato di testo
+    digitale, DOCX, XLSX) — mai una chiamata Sonnet a pagamento qui, per non
+    far spendere una lettura "immediata" senza che l'utente lo sappia. Per
+    scansioni/foto senza testo digitale, suggerisce import_document (azione
+    esplicita, l'utente sa che costa una chiamata di trascrizione)."""
+    if mime_type.startswith("text/"):
+        return f"Contenuto di '{nome_file}':\n{contenuto.decode('utf-8', errors='replace')}"
+    if mime_type == MIME_PDF and file_extraction.pdf_ha_testo_digitale(contenuto):
+        return f"Contenuto di '{nome_file}':\n{file_extraction.estrai_testo_pdf(contenuto)}"
+    if mime_type == MIME_DOCX:
+        return f"Contenuto di '{nome_file}':\n{file_extraction.estrai_testo_docx(contenuto)}"
+    if mime_type == MIME_XLSX:
+        return f"Contenuto di '{nome_file}':\n{file_extraction.estrai_testo_xlsx(contenuto)}"
+    return (
+        f"'{nome_file}' ({mime_type}, {dimensione} byte) — scansione o immagine senza testo "
+        "digitale estraibile, non posso leggerlo direttamente. Usa import_document per "
+        "trascriverlo e salvarlo in memoria (comporta una chiamata di trascrizione)."
+    )
 
 
 async def _autorizza(tenant_id: str, nome_tool: str, categoria: str, **contesto_extra) -> dict | None:
@@ -376,23 +400,99 @@ async def _list_labels(tenant_id: str) -> str:
     return "Etichette/cartelle disponibili: " + ", ".join(nomi) if nomi else "Nessuna etichetta trovata."
 
 
-async def _get_attachment(tenant_id: str, message_id: str, attachment_id: str) -> str:
-    if rifiuto := await _autorizza(tenant_id, "get_attachment", supervisor.CATEGORIA_IMMEDIATA):
+async def _list_attachments(tenant_id: str, message_id: str) -> str:
+    """Chiude la gap di scopribilità per import_document/get_attachment su
+    Gmail: search_memoria espone il message_id di una mail importata, ma
+    nessun tool esponeva finora quali allegati contiene e con quale
+    attachment_id (vedi discussione di design Tappa 5) - senza questo il
+    modello non ha modo di scoprirlo da solo."""
+    if rifiuto := await _autorizza(tenant_id, "list_attachments", supervisor.CATEGORIA_IMMEDIATA):
         return f"Azione non consentita: {rifiuto['message']}"
     access_token = await gmail_client.ottieni_access_token(tenant_id)
     messaggio = await gmail_client.ottieni_messaggio(access_token, message_id)
-    meta = next((a for a in messaggio["allegati"] if a["attachment_id"] == attachment_id), None)
-    if meta is None:
-        return "Allegato non trovato su questo messaggio."
+    if not messaggio["allegati"]:
+        return "Nessun allegato su questo messaggio."
+    righe = [
+        f"- [{a['attachment_id']}] {a['filename']} ({a['mime_type']}, {a['size']} byte)"
+        for a in messaggio["allegati"]
+    ]
+    return "Allegati:\n" + "\n".join(righe)
+
+
+async def _scarica_allegato_con_meta(tenant_id: str, message_id: str, attachment_id: str) -> tuple[bytes, dict]:
+    """Scarica un allegato e ne recupera i metadati (filename, mime_type).
+
+    Trappola reale (verificata contro Gmail vero, non un mock): l'`attachment_id`
+    restituito da `messages.get` NON è stabile tra chiamate diverse - due fetch
+    dello stesso messaggio danno stringhe diverse per lo stesso allegato fisico
+    (verificato: `scarica_allegato` funziona comunque con un id "vecchio", il
+    problema è solo cercare di ri-validarlo per uguaglianza di stringa contro un
+    fetch nuovo). Scopritolo testando il flusso reale list_attachments ->
+    import_document (due chiamate separate, due fetch diversi) - prima che
+    list_attachments esistesse nessun tool esponeva attachment_id da riusare più
+    tardi, quindi il bug non poteva emergere. Fix: ci si fida dell'attachment_id
+    del chiamante per lo scaricamento vero, e si abbinano i metadati di un fetch
+    fresco per **dimensione** (stabile) invece che per attachment_id."""
+    access_token = await gmail_client.ottieni_access_token(tenant_id)
     contenuto = await gmail_client.scarica_allegato(access_token, message_id, attachment_id)
-    if meta["mime_type"].startswith("text/"):
-        return f"Contenuto di '{meta['filename']}':\n{contenuto.decode('utf-8', errors='replace')}"
-    return (
-        f"Allegato '{meta['filename']}' ({meta['mime_type']}, {meta['size']} byte) scaricato. "
-        "L'estrazione del contenuto per formati non testuali (PDF, immagini, ecc.) "
-        "arriva con Memoria: estensione documenti (Tappa 5) - per ora so solo confermare "
-        "che l'allegato esiste e i suoi metadati."
-    )
+    messaggio = await gmail_client.ottieni_messaggio(access_token, message_id)
+    meta = next((a for a in messaggio["allegati"] if a["size"] == len(contenuto)), None)
+    if meta is None:
+        meta = {"filename": "allegato", "mime_type": "application/octet-stream", "size": len(contenuto)}
+    return contenuto, meta
+
+
+async def _get_attachment(tenant_id: str, message_id: str, attachment_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "get_attachment", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        contenuto, meta = await _scarica_allegato_con_meta(tenant_id, message_id, attachment_id)
+    except gmail_client.GmailError as exc:
+        return f"Errore nel recuperare l'allegato, riprova o segnalalo: {exc}"
+    return _estrai_testo_lettura(meta["filename"], meta["mime_type"], meta["size"], contenuto)
+
+
+async def _import_document(
+    tenant_id: str, fonte: str, message_id: str | None = None,
+    attachment_id: str | None = None, file_id: str | None = None,
+) -> str:
+    """Ingest esplicito in Memoria (vedi memoria/ingest_documento.py) —
+    azione immediata come remember_fact, ma sempre esplicita: usa solo
+    quando l'utente chiede di ricordare/importare/salvare un documento,
+    mai automaticamente durante una lettura normale (vincolo nella
+    description del tool)."""
+    if rifiuto := await _autorizza(tenant_id, "import_document", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+
+    if fonte == "gmail_attachment":
+        if not message_id or not attachment_id:
+            return "Servono message_id e attachment_id per importare un allegato Gmail."
+        try:
+            contenuto, meta = await _scarica_allegato_con_meta(tenant_id, message_id, attachment_id)
+        except gmail_client.GmailError as exc:
+            return f"Errore nel recuperare l'allegato, riprova o segnalalo: {exc}"
+        nome_file, mime_type, source_id = meta["filename"], meta["mime_type"], f"{message_id}:{attachment_id}"
+    elif fonte == "drive_file":
+        if not file_id:
+            return "Serve file_id per importare un file Drive."
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        try:
+            dati = await drive_client.leggi_contenuto_file(access_token, file_id)
+        except drive_client.DriveError as exc:
+            return f"Errore nel leggere il file da Drive, riprova o segnalalo: {exc}"
+        nome_file = dati["nome"]
+        if dati["binario"]:
+            contenuto, mime_type = dati["dati_binari"], dati["mime_type"]
+        else:
+            contenuto, mime_type = dati["testo"].encode("utf-8"), "text/plain"
+        source_id = file_id
+    else:
+        return f"Fonte non valida: {fonte}. Usa 'gmail_attachment' o 'drive_file'."
+
+    try:
+        return await importa_documento(tenant_id, fonte, source_id, nome_file, contenuto, mime_type)
+    except ErroreIngestDocumento as exc:
+        return f"Non importato: {exc}"
 
 
 # --- Distruttive: creano un'azione in attesa, mai eseguite subito --------
@@ -499,11 +599,8 @@ async def _read_file(tenant_id: str, file_id: str) -> str:
     except drive_client.DriveError as exc:
         return f"Errore nel leggere il file, riprova o segnalalo: {exc}"
     if contenuto["binario"]:
-        return (
-            f"File '{contenuto['nome']}' ({contenuto['mime_type']}) — binario, non riesco a "
-            "leggerne il contenuto testuale. L'estrazione per formati non testuali (PDF, "
-            "immagini, ecc.) arriva con Memoria: estensione documenti (Tappa 5) - per ora "
-            "so solo confermare che il file esiste e i suoi metadati."
+        return _estrai_testo_lettura(
+            contenuto["nome"], contenuto["mime_type"], len(contenuto["dati_binari"]), contenuto["dati_binari"]
         )
     return f"Contenuto di '{contenuto['nome']}':\n{contenuto['testo']}"
 
@@ -863,12 +960,55 @@ def crea_server(tenant_id: str):
         return _testo(await _list_labels(tenant_id))
 
     @tool(
+        "list_attachments",
+        (
+            "Elenca gli allegati di un messaggio email (message_id, vedi i "
+            "risultati di search_memoria) con il loro attachment_id, nome, "
+            "tipo e dimensione. Usa questo PRIMA di get_attachment o "
+            "import_document su un allegato Gmail — non indovinare mai "
+            "l'attachment_id."
+        ),
+        {"message_id": str},
+    )
+    async def list_attachments(args: dict) -> dict:
+        return _testo(await _list_attachments(tenant_id, args["message_id"]))
+
+    @tool(
         "get_attachment",
-        "Recupera un allegato di un'email (per attachment_id, vedi i risultati di search_memoria/lettura messaggio).",
+        "Recupera un allegato di un'email (per attachment_id, usa prima list_attachments).",
         {"message_id": str, "attachment_id": str},
     )
     async def get_attachment(args: dict) -> dict:
         return _testo(await _get_attachment(tenant_id, args["message_id"], args["attachment_id"]))
+
+    @tool(
+        "import_document",
+        (
+            "Importa in memoria permanente un documento (allegato Gmail o file "
+            "Drive) — PDF, Word, Excel, immagini/scansioni: lo rende cercabile "
+            "semanticamente e, se riconosce chiaramente una controparte "
+            "(es. il fornitore di una fattura), ne salva anche i campi chiave "
+            "(importo, scadenza, ecc.) come fatto collegato a quell'entità. "
+            "USA SOLO quando l'utente chiede esplicitamente di ricordare/"
+            "importare/salvare un documento — NON automaticamente durante "
+            "una lettura normale con get_attachment/read_file."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "fonte": {"type": "string", "enum": ["gmail_attachment", "drive_file"]},
+                "message_id": {"type": "string", "description": "Richiesto se fonte=gmail_attachment"},
+                "attachment_id": {"type": "string", "description": "Richiesto se fonte=gmail_attachment"},
+                "file_id": {"type": "string", "description": "Richiesto se fonte=drive_file"},
+            },
+            "required": ["fonte"],
+        },
+    )
+    async def import_document(args: dict) -> dict:
+        return _testo(await _import_document(
+            tenant_id, args["fonte"], message_id=args.get("message_id"),
+            attachment_id=args.get("attachment_id"), file_id=args.get("file_id"),
+        ))
 
     # --- Calendario ---------------------------------------------------
 
@@ -1209,7 +1349,8 @@ def crea_server(tenant_id: str):
         version="1.0.0",
         tools=[
             search_memoria, remember_fact, draft_email, send_email, reply_email, forward_email,
-            send_draft, trash_email, mark_email, organize_email, list_labels, get_attachment,
+            send_draft, trash_email, mark_email, organize_email, list_labels, list_attachments, get_attachment,
+            import_document,
             search_events, check_availability, respond_to_invite, create_event, update_event, delete_event,
             search_files, read_file, list_folder, create_folder, create_file, update_file_content,
             rename_file, move_file, copy_file, list_permissions, revoke_permission, share_file, trash_file,
@@ -1229,7 +1370,9 @@ ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__mark_email",
     f"mcp__{SERVER_NAME}__organize_email",
     f"mcp__{SERVER_NAME}__list_labels",
+    f"mcp__{SERVER_NAME}__list_attachments",
     f"mcp__{SERVER_NAME}__get_attachment",
+    f"mcp__{SERVER_NAME}__import_document",
     f"mcp__{SERVER_NAME}__search_events",
     f"mcp__{SERVER_NAME}__check_availability",
     f"mcp__{SERVER_NAME}__respond_to_invite",

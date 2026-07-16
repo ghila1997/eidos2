@@ -13,11 +13,13 @@ necessaria per un processo locale a singolo utente).
 """
 from __future__ import annotations
 
+import mimetypes
 import shutil
 from pathlib import Path
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from memoria.ingest_documento import ErroreIngestDocumento, importa_documento
 from orchestratore.safety import supervisor
 
 from . import perimetro
@@ -89,6 +91,25 @@ async def _create_folder(tenant_id: str, path: str) -> str:
     return f"Cartella creata: '{path}'."
 
 
+async def _import_document(tenant_id: str, path: str) -> str:
+    """Ingest esplicito in Memoria di un file locale (vedi
+    memoria/ingest_documento.py) - immediato, sola lettura del file dal
+    lato Agente Locale (nessuna scrittura sul filesystem), ma sempre
+    dentro il perimetro autorizzato come gli altri tool custom qui."""
+    verdetto = await _verifica_perimetro(tenant_id, "import_document", path, supervisor.CATEGORIA_IMMEDIATA)
+    if verdetto["verdict"] != supervisor.VERDICT_ALLOW:
+        return f"Azione non consentita: {verdetto['message']}"
+    file_path = Path(path)
+    if not file_path.is_file():
+        return f"'{path}' non è un file valido."
+    contenuto = file_path.read_bytes()
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    try:
+        return await importa_documento(tenant_id, "locale", path, file_path.name, contenuto, mime_type)
+    except ErroreIngestDocumento as exc:
+        return f"Non importato: {exc}"
+
+
 def crea_server(tenant_id: str):
     @tool(
         "list_directory",
@@ -122,10 +143,26 @@ def crea_server(tenant_id: str):
     async def create_folder(args: dict) -> dict:
         return _testo(await _create_folder(tenant_id, args["path"]))
 
+    @tool(
+        "import_document",
+        (
+            "Importa in memoria permanente un documento locale (dentro il "
+            "perimetro autorizzato) — PDF, Word, Excel, immagini/scansioni: "
+            "lo rende cercabile semanticamente e, se riconosce chiaramente "
+            "una controparte, ne salva anche i campi chiave come fatto "
+            "collegato a quell'entità. USA SOLO quando l'utente chiede "
+            "esplicitamente di ricordare/importare/salvare un documento — "
+            "NON automaticamente durante una lettura normale con Read."
+        ),
+        {"path": str},
+    )
+    async def import_document(args: dict) -> dict:
+        return _testo(await _import_document(tenant_id, args["path"]))
+
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="1.0.0",
-        tools=[list_directory, move_file, delete_file, create_folder],
+        tools=[list_directory, move_file, delete_file, create_folder, import_document],
     )
 
 
@@ -134,6 +171,7 @@ ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__move_file",
     f"mcp__{SERVER_NAME}__delete_file",
     f"mcp__{SERVER_NAME}__create_folder",
+    f"mcp__{SERVER_NAME}__import_document",
 ]
 
 # Tool nativi SDK abilitati insieme ai custom sopra (vedi hook.py): Glob

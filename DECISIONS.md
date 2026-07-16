@@ -874,3 +874,127 @@ condivide lo stesso system prompt, quindi la correzione copre anche quelle senza
 aggiuntive. `docs/agente_locale/README.md` non esiste ancora (linkato da PROJECT.md ma non
 scritto) - questa trappola va riportata lì alla sezione "Trappole note" quando quel file verrà
 creato.
+
+---
+
+## 2026-07-16 — Tappa 5 (Memoria: estensione documenti): routing digitale/visivo per minimizzare il costo
+
+**Contesto**: progettando l'ingestione di documenti oltre le mail (PDF, DOCX, XLSX, immagini/
+scansioni), la prima idea era una pipeline unica OCR-poi-estrazione (chiamata Sonnet vision per
+trascrivere, poi chiamata separata per i campi strutturati) per ogni documento, indipendentemente
+dal formato. Verificando le capacità correnti dell'Anthropic Messages API (skill `claude-api`,
+non a memoria) è emerso che Claude accetta un PDF **nativamente** come content block
+(`{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", ...}}`,
+nessun beta header, limiti 32MB/600 pagine) e lo renderizza pagina per pagina internamente -
+copre anche le scansioni senza bisogno di estrarre noi le immagini di pagina con `pypdf`.
+
+**Decisione**: routing a due vie invece di una pipeline unica:
+- **PDF con strato di testo digitale (rilevato con un pre-check gratuito e locale via `pypdf`),
+  DOCX, XLSX** → estrazione testo locale (`pypdf`/`python-docx`/`openpyxl`) + **Haiku** economico
+  per i campi strutturati (`memoria/document_extraction.py`, `estrai_da_testo`)
+- **PDF scansionato (nessun testo estraibile) o immagine (foto di un documento cartaceo)** →
+  **Sonnet 5**, content block nativo `document`/`image`, **un'unica chiamata** che trascrive
+  (OCR incluso, gestito internamente da Claude) ed estrae i campi insieme
+  (`estrai_da_documento_visivo`) - invece delle due chiamate separate pianificate inizialmente
+- Cap espliciti sul percorso costoso: 20 pagine per il percorso visivo, 20MB per il file (rifiuto
+  esplicito oltre, non un tentativo silenzioso che esplode in costo)
+- Doppia scrittura quando un'entità/controparte è riconosciuta con chiarezza: chunk+embedding
+  (ricerca semantica approssimata, sempre) + upsert in `memoria_fatti` array `documenti` (dato
+  esatto/aggregabile per entità, garantito trovabile per nome) - stessa logica già validata per
+  `remember_fact`, non un doppione: rispondono a domande diverse ("di cosa parla" vs "dammi il
+  dato esatto/tutti i documenti di questa entità")
+
+**Alternative considerate**: pipeline unica OCR-poi-estrazione per ogni formato - scartata,
+avrebbe pagato il costo Sonnet anche sulla maggioranza dei documenti digitali (fatture generate
+da software gestionali hanno quasi sempre uno strato di testo); Batch API per l'ingest (sconto
+50%) - scartata, l'utente aspetta una risposta in chat nello stesso turno, la latenza
+imprevedibile del Batch (fino a 24h) non è compatibile con quell'UX; solo ricerca semantica senza
+estrazione strutturata - scartata, non risponderebbe a domande su dati esatti (importi, scadenze)
+senza affidarsi al ranking di similarità.
+
+**Conseguenze**: nuovi moduli `memoria/file_extraction.py`, `memoria/document_extraction.py`,
+`memoria/storage.py`, `memoria/ingest_documento.py`; nuovo tool `import_document` (Orchestratore:
+fonti `gmail_attachment`/`drive_file`; Agente Locale: fonte `locale`); `get_attachment`/
+`read_file` estesi per estrarre PDF/DOCX/XLSX digitali invece di dire "non supportato".
+
+---
+
+## 2026-07-16 — Tappa 5: gap di scopribilità Gmail — nuovo tool `list_attachments`
+
+**Contesto**: subito dopo aver costruito `import_document` per Gmail, verificando il flusso
+conversazionale reale è emerso che nessun tool esponeva l'elenco degli allegati di un messaggio
+con il relativo `attachment_id` - `search_memoria` espone il `message_id` di una mail importata,
+ma l'`attachment_id` viveva solo dentro `gmail_client.ottieni_messaggio()`, mai restituito al
+modello. Senza questo, `import_document(gmail_attachment)` era invocabile solo se l'utente
+conosceva a mano l'`attachment_id` - inutilizzabile in conversazione naturale.
+
+**Decisione**: nuovo tool `list_attachments(message_id)`, immediato, sola lettura, stesso
+pattern di `list_labels`/`list_permissions` già esistenti - nessuna nuova chiamata Gmail (riusa
+`ottieni_messaggio`, che gli allegati li scarica già). Flusso completo: `search_memoria` → trova
+`message_id` → `list_attachments` → trova `attachment_id` → `import_document`/`get_attachment`.
+
+**Alternative considerate**: estendere `search_memoria` per includere gli allegati nei risultati
+- scartata, avrebbe richiesto una chiamata Gmail live per ogni chunk mail restituito, appesantendo
+un tool pensato per essere veloce; far indovinare l'attachment_id al modello - scartata,
+violerebbe il principio "mai indovinare un identificatore" già applicato altrove.
+
+**Conseguenze**: nessun impatto su `get_attachment` (già esistente, solo la description
+aggiornata per rimandare a `list_attachments`).
+
+---
+
+## 2026-07-16 — Tappa 5: tre bug reali trovati testando con dati veri (Gmail/Drive/PDF reale)
+
+**Contesto**: su richiesta esplicita dell'utente ("devi eseguire sempre tutti i test tu, vai pure
+a cercare su Gmail e Drive"), verificato l'intero modulo con materiale reale invece di fermarsi ai
+test automatici con mock: un PDF anagrafico reale (dati aziendali completi con IBAN/SDI) importato
+da locale, un allegato Gmail reale (fattura Anthropic/Stripe da Stripe), file Drive reali
+(PDF/DOCX/XLSX/immagine). Stessa lezione già imparata più volte nel progetto (scope Calendar
+insufficiente, CookieConflict CLI): i mock verificano che il codice giri, non il comportamento
+reale.
+
+**Bug 1 - `attachment_id` di Gmail non stabile tra chiamate**: due fetch separati dello stesso
+messaggio (`messages.get`) restituiscono stringhe `attachmentId` diverse per lo stesso allegato
+fisico (verificato: `attachments.get` funziona comunque con un id "vecchio", il problema è solo
+ri-validarlo per uguaglianza di stringa contro un fetch nuovo). Rompeva `_get_attachment`/
+`_import_document` ogni volta che venivano chiamati dopo un `list_attachments` separato -
+esattamente il flusso naturale appena costruito. Bug pre-esistente di Tappa 2 (`_get_attachment`),
+mai emerso perché mai testato su un flusso reale a due passi (nessun tool esponeva
+`attachment_id` da riusare più tardi prima di `list_attachments`). **Fix**: nuovo helper
+`_scarica_allegato_con_meta` - si scarica subito con l'`attachment_id` del chiamante (fidandosi,
+verificato che funziona), poi si abbinano i metadati (filename/mime_type) di un fetch fresco per
+**dimensione** (stabile) invece che per `attachment_id`.
+
+**Bug 2 - upload su Supabase Storage falliva su un path già esistente**: emerso implementando il
+fix del Bug 3 sotto (aggiornamento in place riusa lo stesso `documento_id` e quindi lo stesso
+`storage_path`). Mancava `x-upsert: true` nell'header della richiesta - senza, la seconda scrittura
+sullo stesso path falliva con 400. **Fix**: `x-upsert` sempre attivo in `storage.carica_file`.
+
+**Bug 3 - dedup per `source_id` nascondeva contenuto aggiornato**: il controllo di dedup
+originale (`find_documento_by_hash(...) or find_documento_by_source(...)`) trattava un file
+re-importato con lo **stesso** `source_id` (es. lo stesso file Drive modificato) come "già
+presente" anche quando l'hash del contenuto era diverso - mostrando dati ormai vecchi come se
+fossero aggiornati, invece di segnalare un errore visibile. Trovato discutendo con l'utente lo
+scenario "e se scarico e reimporto un file modificato?" prima ancora di un test scriptato.
+**Fix**: dedup vero solo per hash (skip); se l'hash non combacia ma il `source_id` sì,
+si aggiorna lo stesso record (`memoria_db.update_documento`, nuovo) invece di ignorare o
+duplicare (violerebbe comunque il vincolo unico su `source_id`) - chunk vecchi eliminati e
+rigenerati sul contenuto nuovo.
+
+**Bug 4 (minore) - byte NUL nel testo estratto da `pypdf`**: un PDF reale (fattura Anthropic/
+Stripe) produce un byte `\x00` letterale nel testo estratto (sostituto di un trattino/glyph
+mancante nel font) - Postgres rifiuta NUL in una colonna `text`, l'insert del chunk falliva con
+400. **Fix**: `ingest_documento._sanitizza_testo` rimuove i NUL prima di chunk+embedding.
+
+**Perché nessuno di questi l'ha preso un test automatico**: tutti e quattro richiedevano dati
+veri per emergere - due fetch Gmail reali separati nel tempo (Bug 1), un secondo upload reale
+sullo stesso path (Bug 2), un vero scenario di modifica-e-reimport (Bug 3), l'encoding font
+specifico di un PDF vero generato da Stripe (Bug 4). Coperti ora da test di regressione
+(`test_tools.py`, `test_ingest_documento.py`) che riproducono le condizioni (size-based matching,
+hash diversi con stesso source, testo con NUL), ma la scoperta iniziale è venuta solo dal test
+reale.
+
+**Conseguenze**: nessun impatto sui contratti dei tool esposti al modello. `memoria/db.py` ha
+una nuova funzione `update_documento`. Playbook/connettori.md - punto 4 ("verificare con dati
+veri") confermato ancora una volta come non negoziabile, non solo per i connettori ma per
+qualunque pipeline che tocchi un'API esterna o un formato di file reale.

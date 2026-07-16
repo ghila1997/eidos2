@@ -121,16 +121,29 @@
     aggiunge come nuovi client + smistamento interno per `provider`, senza cambiare
     l'interfaccia che il modello ha già imparato a usare
 
-## Tappa 5 — Memoria: estensione documenti (non un modulo a parte)
+## Tappa 5 — Memoria: estensione documenti (non un modulo a parte) — ✅ fatto (2026-07-16)
 
-- Ingestione documenti oltre le mail (PDF, file locali, storage cloud), deduplica
-  cross-origine per hash, archiviazione del file originale (storage)
-- Estrazione strutturata: oltre a rendere il documento cercabile per argomento (embedding),
-  si estraggono i campi rilevanti (es. importo e scadenza di una fattura) e si scrivono nelle
-  tabelle strutturate di Memoria — non solo riassunto/ricerca semantica
+- Ingestione esplicita (`import_document`) di PDF/DOCX/XLSX/immagini (allegato Gmail, file
+  Drive, file locale via Agente Locale) — deduplica per hash dei byte grezzi (cross-origine:
+  stesso contenuto da fonti diverse → un solo documento), archiviazione del file originale
+  (Supabase Storage, bucket privato `documenti`)
+- Routing per formato/qualità per minimizzare il costo: PDF con strato di testo digitale/DOCX/
+  XLSX → estrazione locale gratuita (`pypdf`/`python-docx`/`openpyxl`) + Haiku economico; PDF
+  scansionato/immagine → Sonnet 5, content block nativo `document`/`image` (un'unica chiamata
+  che trascrive/OCR ed estrae insieme, non due chiamate separate) — cap 20 pagine sul percorso
+  visivo, 20MB sul file
+- Estrazione strutturata: oltre a rendere il documento cercabile per argomento (embedding), se
+  riconosce una controparte chiara si scrivono i campi rilevanti in `memoria_fatti` (array
+  `documenti`, separato da `note` di `remember_fact`) — se l'entità non è chiara, solo ricerca
+  semantica, mai un `entity_key` indovinato a rischio
+  - Aggiornamento in place: stesso `source_id` (es. stesso file Drive) con contenuto cambiato →
+    aggiorna lo stesso documento (nuovi chunk, storage sovrascritto), non lo ignora né lo duplica
 - **Finito quando**: una domanda su un documento reale caricato produce una risposta corretta
   con fonte citata, e i campi chiave di un documento tipico (es. fattura) sono interrogabili
-  come dati strutturati, non solo trovabili per ricerca semantica
+  come dati strutturati, non solo trovabili per ricerca semantica — ✅ verificato 2026-07-16 con
+  dati reali (fattura Anthropic/Stripe da Gmail, CV/DOCX/XLSX/immagine da Drive, PDF anagrafico
+  reale da locale): entità riconosciute, campi estratti, dedup e aggiornamento in place
+  confermati, tre bug reali trovati e corretti (vedi DECISIONS.md)
 
 ## Tappa 6 — Voce
 
@@ -213,7 +226,10 @@ non-founder, non date per scontate:
   tecnica senza contenuto
 - **Privacy/GDPR**: diritto alla cancellazione dati di un cliente reale — verificare che
   cancellare un fatto/documento lo tolga davvero ovunque, **audit log incluso** (nel progetto
-  precedente `forget()` non toccava l'audit log, dove il contenuto restava in chiaro)
+  precedente `forget()` non toccava l'audit log, dove il contenuto restava in chiaro).
+  Dalla Tappa 5 questo include anche il **bucket Supabase Storage** (`documenti`, file
+  originali dei documenti importati) — un nuovo posto dove vivono dati cliente, da non
+  dimenticare quando si costruisce la cancellazione
 - **Backup dei dati**: policy di backup/restore per email/documenti/fatti dei clienti
 - **Osservabilità in produzione**: come si scopre che un cliente reale ha un problema (log
   minimi + alert), non solo log locali visti dal founder durante lo sviluppo

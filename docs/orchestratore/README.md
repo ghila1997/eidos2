@@ -5,16 +5,22 @@
 ## Responsabilità
 
 Agente conversazionale singolo (Claude Agent SDK, modello `claude-sonnet-5`) che capisce
-l'intento del founder e usa due connettori completi — Gmail e Google Calendar — per cercare,
-rispondere, inoltrare, organizzare, inviare mail, e cercare/creare/modificare/cancellare eventi
-per suo conto. Memoria: poche preferenze sempre caricate, fatti strutturati per entità (upsert,
-scrittura sempre esplicita via `remember_fact`), ricerca semantica (pgvector) unificata su mail
-importate + eventi calendario **conclusi** + fatti salvati (`search_memoria`). NON fa: subagent
-paralleli (nessun bisogno di delega ancora), sync/import automatico (on-demand, l'automatico è
-Tappa 10), estrazione strutturata da documenti generici (Tappa 5), UI oltre CLI (Tappa 7),
-gestione account Gmail/Calendar (S/MIME, filtri, delegati, ACL calendari — amministrazione non
-richiesta tramite chat), fornitori diversi da Google (Outlook: prossimo incremento, dopo
-validazione di questo, vedi ROADMAP.md).
+l'intento del founder e usa tre connettori completi — Gmail, Google Calendar e Google Drive —
+per cercare, rispondere, inoltrare, organizzare, inviare mail, cercare/creare/modificare/
+cancellare eventi, e cercare/leggere/creare/organizzare/condividere file per suo conto. Memoria:
+poche preferenze sempre caricate, fatti strutturati per entità (upsert, scrittura sempre
+esplicita via `remember_fact` o via estrazione automatica da un documento importato, vedi
+Tappa 5), ricerca semantica (pgvector) unificata su mail importate + eventi calendario
+**conclusi** + fatti salvati + documenti importati (`search_memoria`). Estensione documenti
+(Tappa 5): ingestione esplicita di PDF/DOCX/XLSX/immagini (allegato Gmail, file Drive, file
+locale via Agente Locale) — dedup cross-origine per hash, archiviazione del file originale
+(Supabase Storage), estrazione strutturata verso `memoria_fatti` quando riconosce una
+controparte chiara. NON fa: subagent paralleli (nessun bisogno di delega ancora), sync/import
+automatico (on-demand, l'automatico è Tappa 10), UI oltre CLI (Tappa 7), gestione account
+Gmail/Calendar/Drive (S/MIME, filtri, delegati, ACL, quota, Shared Drives — amministrazione non
+richiesta tramite chat), fornitori diversi da Google (Outlook/OneDrive: prossimo incremento,
+dopo validazione della Suite Google, vedi ROADMAP.md), OCR di documenti oltre 20 pagine
+scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
 
 ## Interfacce
 
@@ -22,11 +28,14 @@ validazione di questo, vedi ROADMAP.md).
   `POST /azioni/{id}/conferma` (unico punto in cui un'azione distruttiva diventa reale),
   `GET /oauth/google/authorize` + `GET /oauth/google/callback` (collegamento Gmail),
   `GET /oauth/google_calendar/authorize` + `GET /oauth/google_calendar/callback` (collegamento
-  Calendar, consenso separato e incrementale), `POST /import-mail` (ingest mail on-demand),
-  `POST /import-calendar` (ingest eventi calendario **conclusi** on-demand). Tutti richiedono la
-  sessione di Fondamenta (cookie), quindi utilizzabili da qualunque dispositivo loggato.
-- **Consuma**: Fondamenta (`get_sessione_corrente`), Supabase Postgres+pgvector, Gmail API,
-  Google Calendar API, Voyage AI (embedding), Anthropic API pura (classificazione Haiku), Claude
+  Calendar, consenso separato e incrementale), `GET /oauth/google_drive/authorize` +
+  `GET /oauth/google_drive/callback` (collegamento Drive, scope pieno `drive`, consenso separato
+  e incrementale), `POST /import-mail` (ingest mail on-demand), `POST /import-calendar` (ingest
+  eventi calendario **conclusi** on-demand). Tutti richiedono la sessione di Fondamenta (cookie),
+  quindi utilizzabili da qualunque dispositivo loggato.
+- **Consuma**: Fondamenta (`get_sessione_corrente`), Supabase Postgres+pgvector+Storage, Gmail
+  API, Google Calendar API, Google Drive API, Voyage AI (embedding), Anthropic API pura
+  (classificazione mail Haiku, estrazione documenti Haiku/Sonnet — vedi Tappa 5), Claude
   Agent SDK (conversazione, richiede il CLI Node.js `@anthropic-ai/claude-code` come sottoprocesso
   — vedi `Dockerfile`).
 
@@ -39,16 +48,27 @@ validazione di questo, vedi ROADMAP.md).
 - `codice/orchestratore/tools.py` — tool custom:
   - Mail: `search_memoria` (lettura unificata, vedi sotto), `draft_email`, `send_email`,
     `reply_email`, `forward_email`, `send_draft`, `trash_email` (questi ultimi cinque creano
-    un'azione pending), `mark_email`, `organize_email`, `list_labels`, `get_attachment`
-  - Memoria: `search_memoria` (mail + eventi calendario conclusi + fatti, un solo tool per evitare
-    che il modello ne usi solo alcuni e perda informazioni), `remember_fact` (scrittura sempre
-    esplicita, mai automatica — vincolo nella description del tool)
+    un'azione pending), `mark_email`, `organize_email`, `list_labels`, `list_attachments`
+    (elenca allegati con `attachment_id` — necessario prima di `get_attachment`/
+    `import_document` su Gmail, vedi Tappa 5), `get_attachment` (estrae testo per PDF/DOCX/XLSX
+    con strato digitale; per scansioni/immagini suggerisce `import_document` invece di fingere
+    di averle lette)
+  - Memoria: `search_memoria` (mail + eventi calendario conclusi + fatti + documenti importati,
+    un solo tool per evitare che il modello ne usi solo alcuni e perda informazioni),
+    `remember_fact` (scrittura sempre esplicita, mai automatica — vincolo nella description del
+    tool), `import_document` (Tappa 5 — ingest esplicito di un documento Gmail/Drive in Memoria,
+    vedi sotto)
   - Calendario: `search_events` (live, passato+futuro, tutti i calendari), `check_availability`,
     `respond_to_invite` (immediati), `create_event`/`update_event`/`delete_event` (gate
     condizionale: con partecipanti → azione pending, senza → immediato; `create_event` con `fine`
     omessa usa default 1 ora)
   - Ogni tool calendario cattura `CalendarError` esplicitamente e restituisce un messaggio di
     errore leggibile invece di lasciarla propagare (trappola trovata a STOP 2, vedi sotto)
+  - Drive: `search_files`, `read_file` (estrae testo per PDF/DOCX/XLSX digitali e Google Docs/
+    Sheets/Slides via export; per scansioni/immagini suggerisce `import_document`), `list_folder`,
+    `create_folder`, `create_file`, `update_file_content`, `rename_file`, `move_file`,
+    `copy_file`, `list_permissions`, `revoke_permission` (immediati), `share_file`/`trash_file`
+    (creano un'azione pending)
 - `codice/orchestratore/safety/` — Safety Supervisor: punto unico di autorizzazione per ogni
   tool call (nativo o custom), policy dichiarative in `policies.yaml`, audit log JSONL
 - `codice/orchestratore/azioni.py` — azioni distruttive in attesa di conferma umana esplicita,
@@ -58,11 +78,15 @@ validazione di questo, vedi ROADMAP.md).
 - `codice/orchestratore/calendar_client.py` — client Google Calendar completo (httpx puro):
   cerca (tutti i calendari), crea/modifica/cancella, rispondi a invito (tocca solo il proprio
   `responseStatus`), controlla disponibilità (`freeBusy`), sync incrementale (`syncToken`)
+- `codice/orchestratore/drive_client.py` — client Google Drive completo (httpx puro): cerca
+  (full-text incluso), legge (export per Google Docs/Sheets/Slides, testo per file `text/*`,
+  scarica i byte grezzi per il resto — usato anche da `import_document`), crea/carica,
+  organizza in cartelle, copia, condivide, gestisce permessi, cestina
 - `codice/orchestratore/oauth_core.py` — parte OAuth generica (state, scambio/refresh token,
   cifratura, storage credenziali) condivisa tra provider
-- `codice/orchestratore/oauth.py` / `oauth_calendar.py` — wrapper per provider (scope, redirect
-  path) sopra `oauth_core.py` — split fatto in Tappa 4 quando è arrivato il secondo provider OAuth
-  (vedi DECISIONS.md, "Connettori multi-provider")
+- `codice/orchestratore/oauth.py` / `oauth_calendar.py` / `oauth_drive.py` — wrapper per provider
+  (scope, redirect path) sopra `oauth_core.py` — split fatto in Tappa 4 quando è arrivato il
+  secondo provider OAuth (vedi DECISIONS.md, "Connettori multi-provider")
 - `codice/orchestratore/classification.py` — classificazione mail (Anthropic API pura, Haiku)
   prima dell'ingest
 - `codice/orchestratore/embeddings.py` — embedding (Voyage AI, `voyage-3`)
@@ -72,7 +96,22 @@ validazione di questo, vedi ROADMAP.md).
   su tutti i calendari: sync incrementale (`syncToken`) → filtra conclusi → dedup →
   chunk+embedding+salva. Eventi futuri restano fuori, gestiti live da `search_events`
 - `codice/memoria/db.py` — accesso PostgREST alle tabelle di Memoria, incluse `find_fatti_ilike`
-  (match fuzzy su entità) e `elimina_chunk_documento` (re-embed dei fatti aggiornati)
+  (match fuzzy su entità), `elimina_chunk_documento` (re-embed dei fatti aggiornati) e
+  `set_storage_path` (Tappa 5, valorizzato dopo l'upload)
+- `codice/memoria/file_extraction.py` (Tappa 5) — estrazione testo locale gratuita: PDF con
+  strato di testo digitale (`pypdf`), DOCX (`python-docx`), XLSX (`openpyxl`); anche pre-check a
+  costo zero per decidere il routing (`pdf_ha_testo_digitale`)
+- `codice/memoria/document_extraction.py` (Tappa 5) — estrazione campi strutturati, structured
+  output via tool forzato (stessa forma di `classification.py`): `estrai_da_testo` (Haiku,
+  economico, per testo già pulito) ed `estrai_da_documento_visivo` (Sonnet 5, content block
+  nativo `document`/`image` — un'unica chiamata che trascrive/OCR ed estrae insieme, invece di
+  due chiamate separate)
+- `codice/memoria/storage.py` (Tappa 5) — upload su Supabase Storage (bucket privato `documenti`)
+- `codice/memoria/ingest_documento.py` (Tappa 5) — pipeline condivisa tra Orchestratore e Agente
+  Locale: dedup per hash dei byte grezzi → routing per formato/qualità (digitale+Haiku
+  economico vs scansione/immagine+Sonnet) → chunk+embedding → upload Storage → upsert
+  `memoria_fatti` solo se un'entità è riconosciuta con chiarezza (altrimenti solo ricerca
+  semantica)
 - `codice/cli.py` — client CLI remoto sottile: elenco chiuso e deterministico di frasi di
   conferma accettate (sì/confermo/vai/ok/autorizzo, no/annulla/fermati/stop), non solo `y`/`n`
   esatto — resta un confronto in codice, non un'interpretazione del modello
@@ -84,15 +123,19 @@ validazione di questo, vedi ROADMAP.md).
 2. Collega Gmail: apri l'URL restituito da `GET /oauth/google/authorize` (con cookie) in un browser
 3. Collega Calendar: apri l'URL restituito da `GET /oauth/google_calendar/authorize` (con cookie) —
    consenso separato, incrementale (`include_granted_scopes`)
-4. Importa: `POST /import-mail` e `POST /import-calendar` (con cookie)
-5. CLI: `cd codice && python cli.py` — chatta, es. "che impegni ho questa settimana?", "crea un
+4. Collega Drive: apri l'URL restituito da `GET /oauth/google_drive/authorize` (con cookie)
+5. Importa: `POST /import-mail` e `POST /import-calendar` (con cookie)
+6. CLI: `cd codice && python cli.py` — chatta, es. "che impegni ho questa settimana?", "crea un
    evento domani alle 15 con [email]" (chiede conferma), "ricorda che X mi ha detto Y", "cosa so
-   su X?"
+   su X?", "cerca la fattura di [fornitore]" → "che allegati ha?" → "importala in memoria"
+   (Tappa 5, allegato Gmail/file Drive); da Agente Locale: "importa fattura.pdf in memoria"
+   (file locale, dentro il perimetro autorizzato)
 
 Test automatici: `codice/tests/test_tools.py`, `test_azioni.py`, `test_gmail_client.py`,
-`test_calendar_client.py`, `test_import_mail.py`, `test_import_calendar.py`, `test_oauth.py`,
-`test_oauth_calendar.py`, `test_classification.py`, `test_memoria_db.py`, `test_router.py`,
-`test_cli.py`.
+`test_calendar_client.py`, `test_drive_client.py`, `test_import_mail.py`,
+`test_import_calendar.py`, `test_oauth.py`, `test_oauth_calendar.py`, `test_oauth_drive.py`,
+`test_classification.py`, `test_memoria_db.py`, `test_file_extraction.py`,
+`test_document_extraction.py`, `test_ingest_documento.py`, `test_router.py`, `test_cli.py`.
 
 ## Decisioni rilevanti
 

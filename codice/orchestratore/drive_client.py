@@ -161,7 +161,15 @@ async def leggi_contenuto_file(access_token: str, file_id: str) -> dict[str, Any
             raise DriveError(f"Drive files.get(alt=media) fallita: {resp.status_code}")
         return {**meta, "testo": resp.text, "binario": False}
 
-    return {**meta, "testo": None, "binario": True}
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{_API_BASE}/files/{file_id}",
+            params={"alt": "media"},
+            headers=_headers(access_token),
+        )
+    if resp.status_code != 200:
+        raise DriveError(f"Drive files.get(alt=media) fallita: {resp.status_code}")
+    return {**meta, "testo": None, "binario": True, "dati_binari": resp.content}
 
 
 async def crea_cartella(access_token: str, nome: str, cartella_padre_id: str | None = None) -> dict[str, Any]:

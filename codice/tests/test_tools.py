@@ -1,8 +1,21 @@
+import io
+
+import pypdf
 import pytest
 
 from orchestratore import azioni, drive_client, gmail_client, tools
 
 TENANT = "11111111-1111-1111-1111-111111111111"
+
+
+def _pdf_senza_testo() -> bytes:
+    """PDF valido ma senza strato di testo digitale — equivalente a una
+    scansione/foto per file_extraction.pdf_ha_testo_digitale."""
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -213,15 +226,58 @@ async def test_get_attachment_testo_mostra_contenuto_decodificato(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_attachment_binario_non_finge_di_leggerlo(monkeypatch):
+async def test_list_attachments_mostra_attachment_id(monkeypatch):
     async def fake_token(tenant_id):
         return "fake-token"
 
     async def fake_ottieni_messaggio(access_token, message_id):
-        return {"allegati": [{"attachment_id": "att-1", "filename": "fattura.pdf", "mime_type": "application/pdf", "size": 12345}]}
+        return {"allegati": [
+            {"attachment_id": "att-1", "filename": "fattura.pdf", "mime_type": "application/pdf", "size": 12345},
+        ]}
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "ottieni_messaggio", fake_ottieni_messaggio)
+
+    risultato = await tools._list_attachments(TENANT, "msg-1")
+
+    assert "att-1" in risultato
+    assert "fattura.pdf" in risultato
+
+
+@pytest.mark.asyncio
+async def test_list_attachments_nessun_allegato(monkeypatch):
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_ottieni_messaggio(access_token, message_id):
+        return {"allegati": []}
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "ottieni_messaggio", fake_ottieni_messaggio)
+
+    risultato = await tools._list_attachments(TENANT, "msg-1")
+
+    assert "Nessun allegato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_pdf_scansionato_suggerisce_import_document(monkeypatch):
+    """Tappa 5: un PDF senza strato di testo digitale (scansione) non deve
+    fingere di essere stato letto - suggerisce import_document (che comporta
+    una chiamata di trascrizione a pagamento), non lo fa in automatico da
+    una lettura "immediata"."""
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    pdf_bytes = _pdf_senza_testo()
+
+    async def fake_ottieni_messaggio(access_token, message_id):
+        # size deve combaciare con i byte scaricati - vedi _scarica_allegato_con_meta:
+        # abbina i metadati per dimensione, non per attachment_id (non stabile su Gmail vero)
+        return {"allegati": [{"attachment_id": "att-diverso-da-una-rifetch", "filename": "fattura.pdf", "mime_type": "application/pdf", "size": len(pdf_bytes)}]}
 
     async def fake_scarica(access_token, message_id, attachment_id):
-        return b"%PDF-fake-bytes"
+        return pdf_bytes
 
     monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
     monkeypatch.setattr(gmail_client, "ottieni_messaggio", fake_ottieni_messaggio)
@@ -229,7 +285,7 @@ async def test_get_attachment_binario_non_finge_di_leggerlo(monkeypatch):
 
     risultato = await tools._get_attachment(TENANT, "msg-1", "att-1")
     assert "fattura.pdf" in risultato
-    assert "Tappa 5" in risultato  # onestà sul limite attuale, non finge di aver estratto il PDF
+    assert "import_document" in risultato  # non finge di aver letto una scansione
 
 
 @pytest.mark.asyncio
@@ -682,22 +738,24 @@ async def test_search_files_esegue_subito_senza_conferma(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_file_binario_non_estrae_testo(monkeypatch):
-    """Stessa trappola già coperta per gli allegati Gmail: un file binario
-    non deve mai restituire un contenuto testuale inventato/troncato male."""
+async def test_read_file_scansione_suggerisce_import_document(monkeypatch):
+    """Stessa trappola già coperta per gli allegati Gmail: un PDF senza
+    testo digitale (scansione) non deve fingere di essere stato letto."""
     async def fake_token(tenant_id):
         return "fake-token"
 
     async def fake_leggi(access_token, file_id):
-        return {"nome": "scansione.pdf", "mime_type": "application/pdf", "testo": None, "binario": True}
+        return {
+            "nome": "scansione.pdf", "mime_type": "application/pdf",
+            "testo": None, "binario": True, "dati_binari": _pdf_senza_testo(),
+        }
 
     monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
     monkeypatch.setattr(drive_client, "leggi_contenuto_file", fake_leggi)
 
     risultato = await tools._read_file(TENANT, "f-1")
 
-    assert "binario" in risultato
-    assert "Tappa 5" in risultato
+    assert "import_document" in risultato
 
 
 @pytest.mark.asyncio
@@ -734,3 +792,79 @@ async def test_move_file_esegue_subito_senza_conferma(monkeypatch):
 
     assert chiamate == [("f-1", "cartella-2")]
     assert "Report" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_gmail_attachment_recupera_e_ingerisce(monkeypatch):
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    contenuto_finto = b"%PDF-contenuto-finto"
+
+    async def fake_ottieni_messaggio(access_token, message_id):
+        # attachment_id diverso da quello passato al tool: su Gmail vero non e'
+        # stabile tra chiamate, l'abbinamento avviene per dimensione (vedi
+        # _scarica_allegato_con_meta)
+        return {"allegati": [{"attachment_id": "att-rifetch-diverso", "filename": "fattura.pdf", "mime_type": "application/pdf", "size": len(contenuto_finto)}]}
+
+    async def fake_scarica(access_token, message_id, attachment_id):
+        return contenuto_finto
+
+    ricevuto = {}
+
+    async def fake_importa(tenant_id, fonte, source_id, nome_file, contenuto, mime_type):
+        ricevuto.update(fonte=fonte, source_id=source_id, nome_file=nome_file, mime_type=mime_type)
+        return "Documento importato (id doc-1, tipo fattura): ricercabile in memoria."
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "ottieni_messaggio", fake_ottieni_messaggio)
+    monkeypatch.setattr(gmail_client, "scarica_allegato", fake_scarica)
+    monkeypatch.setattr(tools, "importa_documento", fake_importa)
+
+    risultato = await tools._import_document(TENANT, "gmail_attachment", message_id="msg-1", attachment_id="att-1")
+
+    assert ricevuto["fonte"] == "gmail_attachment"
+    assert ricevuto["source_id"] == "msg-1:att-1"
+    assert ricevuto["nome_file"] == "fattura.pdf"
+    assert "importato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_drive_file_binario_recupera_e_ingerisce(monkeypatch):
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_leggi(access_token, file_id):
+        return {
+            "nome": "contratto.pdf", "mime_type": "application/pdf",
+            "testo": None, "binario": True, "dati_binari": b"%PDF-finto",
+        }
+
+    ricevuto = {}
+
+    async def fake_importa(tenant_id, fonte, source_id, nome_file, contenuto, mime_type):
+        ricevuto.update(fonte=fonte, source_id=source_id, mime_type=mime_type, contenuto=contenuto)
+        return "Documento importato (id doc-2, tipo contratto): ricercabile in memoria."
+
+    monkeypatch.setattr(drive_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(drive_client, "leggi_contenuto_file", fake_leggi)
+    monkeypatch.setattr(tools, "importa_documento", fake_importa)
+
+    risultato = await tools._import_document(TENANT, "drive_file", file_id="file-1")
+
+    assert ricevuto["fonte"] == "drive_file"
+    assert ricevuto["source_id"] == "file-1"
+    assert ricevuto["mime_type"] == "application/pdf"
+    assert "importato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_fonte_non_valida():
+    risultato = await tools._import_document(TENANT, "fonte_a_caso")
+    assert "Fonte non valida" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_gmail_senza_parametri_richiesti():
+    risultato = await tools._import_document(TENANT, "gmail_attachment")
+    assert "message_id" in risultato and "attachment_id" in risultato

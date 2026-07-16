@@ -123,6 +123,61 @@ async def test_create_folder_con_conferma_crea_sottocartelle(tmp_path, monkeypat
     assert "creata" in risultato
 
 
+@pytest.mark.asyncio
+async def test_import_document_fuori_perimetro_negato_senza_chiamare_ingest(tmp_path, monkeypatch):
+    file = tmp_path / "fattura.pdf"
+    file.write_bytes(b"contenuto")
+
+    chiamato = False
+
+    async def fake_importa(*args, **kwargs):
+        nonlocal chiamato
+        chiamato = True
+        return "non dovrebbe arrivare qui"
+
+    monkeypatch.setattr(perimetro, "is_path_allowed", lambda tenant_id, path: _false())
+    monkeypatch.setattr(tools, "importa_documento", fake_importa)
+
+    risultato = await tools._import_document(TENANT, str(file))
+
+    assert chiamato is False
+    assert "non consentita" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_dentro_perimetro_chiama_ingest(tmp_path, monkeypatch):
+    file = tmp_path / "note.txt"
+    file.write_bytes(b"contenuto di prova")
+
+    ricevuto = {}
+
+    async def fake_importa(tenant_id, fonte, source_id, nome_file, contenuto, mime_type):
+        ricevuto.update(
+            tenant_id=tenant_id, fonte=fonte, source_id=source_id,
+            nome_file=nome_file, contenuto=contenuto, mime_type=mime_type,
+        )
+        return "Documento importato (id doc-1, tipo altro): ricercabile in memoria."
+
+    monkeypatch.setattr(perimetro, "is_path_allowed", lambda tenant_id, path: _true())
+    monkeypatch.setattr(tools, "importa_documento", fake_importa)
+
+    risultato = await tools._import_document(TENANT, str(file))
+
+    assert ricevuto["fonte"] == "locale"
+    assert ricevuto["source_id"] == str(file)
+    assert ricevuto["contenuto"] == b"contenuto di prova"
+    assert "importato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_import_document_file_inesistente(tmp_path, monkeypatch):
+    monkeypatch.setattr(perimetro, "is_path_allowed", lambda tenant_id, path: _true())
+
+    risultato = await tools._import_document(TENANT, str(tmp_path / "non-esiste.pdf"))
+
+    assert "non è un file valido" in risultato
+
+
 async def _true(*args, **kwargs) -> bool:
     return True
 

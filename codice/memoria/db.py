@@ -151,11 +151,14 @@ async def insert_documento(
     content_hash: str,
     categoria: str,
     priorita: str,
+    storage_path: str | None = None,
 ) -> str:
     """Inserisce il documento sorgente. Il chiamante deve aver già verificato
     che non esiste (find_documento_by_hash / find_documento_by_source) —
     dedup cross-origine è una decisione applicativa, non lasciata a un solo
-    vincolo DB (vedi idea salvata su Memoria in notes/)."""
+    vincolo DB (vedi idea salvata su Memoria in notes/). storage_path è
+    valorizzato solo per i documenti Tappa 5 (file originale archiviato in
+    Supabase Storage) — resta null per mail/eventi/fatti."""
     url, key = supabase_settings()
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -168,10 +171,46 @@ async def insert_documento(
                 "content_hash": content_hash,
                 "categoria": categoria,
                 "priorita": priorita,
+                "storage_path": storage_path,
             },
         )
     resp.raise_for_status()
     return resp.json()[0]["id"]
+
+
+async def update_documento(
+    tenant_id: str, documento_id: str, content_hash: str, categoria: str, priorita: str | None,
+) -> None:
+    """Aggiorna un documento esistente con contenuto cambiato (stesso
+    source_id, hash diverso — es. un file Drive modificato e re-importato).
+    Non un nuovo insert: (tenant_id, source_type, source_id) è vincolato
+    unico, e semanticamente è lo stesso documento aggiornato, non uno
+    nuovo — il chiamante ri-genera chunk/estrazione sullo stesso
+    documento_id (vedi memoria/ingest_documento.py)."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{url}/rest/v1/memoria_documenti",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+            json={"content_hash": content_hash, "categoria": categoria, "priorita": priorita},
+        )
+    resp.raise_for_status()
+
+
+async def set_storage_path(tenant_id: str, documento_id: str, storage_path: str) -> None:
+    """Valorizza storage_path dopo l'upload su Supabase Storage - separato
+    da insert_documento perché il path include l'id generato dal DB
+    (vedi memoria/storage.py)."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{url}/rest/v1/memoria_documenti",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{documento_id}"},
+            headers=rest_headers(key),
+            json={"storage_path": storage_path},
+        )
+    resp.raise_for_status()
 
 
 async def insert_chunk(
