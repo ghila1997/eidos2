@@ -5,17 +5,19 @@ decisione "Orchestratore server-side").
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from claude_agent_sdk import ClaudeAgentOptions, ProcessError, ResultMessage, query
+from claude_agent_sdk.types import StreamEvent
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from fondamenta.auth import get_sessione_corrente
 from memoria import db as memoria_db
 
-from . import azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, tools
+from . import azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, tools, voce_token
 
 router = APIRouter()
 
@@ -167,6 +169,129 @@ async def chat(body: ChatRequest, request: Request):
         "risposta": "\n".join(pezzi_risposta),
         "azione_in_attesa": azione_appena_creata,
     }
+
+
+@router.post("/voice/token")
+async def voice_token(request: Request):
+    """Emette i token effimeri per il client vocale (vedi voce_token.py).
+    Richiede la sessione di Fondamenta come ogni altro endpoint."""
+    await get_sessione_corrente(request)
+    try:
+        return await voce_token.emetti_token()
+    except voce_token.VoceNonConfigurata as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except voce_token.ErroreProviderVoce as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+def _riga_sse(evento: str, data: dict | None) -> str:
+    return f"event: {evento}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _nome_tool_pulito(nome: str) -> str:
+    """`mcp__<server>__<tool>` -> `<tool>`; i tool nativi restano invariati.
+    Il client vocale mappa questo nome sui riempitivi ('un attimo, controllo...')."""
+    if nome.startswith("mcp__"):
+        return nome.split("__", 2)[2]
+    return nome
+
+
+@router.post("/chat/stream")
+async def chat_stream(body: ChatRequest, request: Request):
+    """Variante streaming di /chat (SSE) per il client vocale (Tappa 6):
+    eventi `delta` (testo man mano che il modello genera), `tool_in_corso`
+    (alimenta i riempitivi vocali), `fine` (risposta completa + eventuale
+    azione in attesa di conferma), `errore` (messaggio pulito, mai traceback).
+    Stessa auth, stessa sessione agente e stesso gate di /chat."""
+    sessione = await get_sessione_corrente(request)
+    tenant_id = sessione["tenant_id"]
+
+    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+    if azione_pendente is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "messaggio": "C'è un'azione in attesa di conferma, risolvila prima di continuare.",
+                "azione_id": azione_pendente["id"],
+                "tipo": azione_pendente["tipo"],
+                "payload": azione_pendente["payload"],
+            },
+        )
+
+    preferenze = await memoria_db.get_preferenze(tenant_id)
+    session_id = await memoria_db.get_sessione_agent(tenant_id)
+    server = tools.crea_server(tenant_id)
+
+    def _opzioni(resume: str | None) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            model=MODEL,
+            system_prompt=_costruisci_system_prompt(preferenze),
+            mcp_servers={tools.SERVER_NAME: server},
+            allowed_tools=tools.ALLOWED_TOOLS,
+            setting_sources=["user", "project"],
+            resume=resume,
+            include_partial_messages=True,
+        )
+
+    async def genera():
+        pezzi: list[str] = []
+        nuovo_id: str | None = session_id
+        qualcosa_emesso = False
+
+        async def _turno(resume: str | None):
+            nonlocal nuovo_id, qualcosa_emesso
+            async for message in query(prompt=body.messaggio, options=_opzioni(resume)):
+                if isinstance(message, StreamEvent):
+                    evento = message.event
+                    tipo = evento.get("type")
+                    if tipo == "content_block_delta":
+                        delta = evento.get("delta") or {}
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            qualcosa_emesso = True
+                            yield _riga_sse("delta", {"testo": delta["text"]})
+                    elif tipo == "content_block_start":
+                        blocco = evento.get("content_block") or {}
+                        if blocco.get("type") == "tool_use":
+                            qualcosa_emesso = True
+                            yield _riga_sse(
+                                "tool_in_corso", {"tool": _nome_tool_pulito(blocco.get("name", ""))}
+                            )
+                elif isinstance(message, ResultMessage):
+                    nuovo_id = message.session_id
+                    if message.subtype == "success" and message.result:
+                        pezzi.append(message.result)
+
+        try:
+            try:
+                async for riga in _turno(session_id):
+                    yield riga
+            except ProcessError:
+                # Stesso fallback di /chat: la sessione salvata non esiste più
+                # in questo container. Si riparte con una sessione nuova, ma
+                # solo se non è già uscito nulla verso il client.
+                if session_id is None or qualcosa_emesso:
+                    raise
+                nuovo_id = None
+                async for riga in _turno(None):
+                    yield riga
+
+            if nuovo_id:
+                await memoria_db.set_sessione_agent(tenant_id, nuovo_id)
+
+            azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+            yield _riga_sse(
+                "fine",
+                {"risposta": "\n".join(pezzi), "azione_in_attesa": azione_appena_creata},
+            )
+        except Exception:
+            # Mai traceback nel flusso: il client vocale lo pronuncia
+            # ("ogni guasto ha una voce", spec Tappa 6).
+            yield _riga_sse(
+                "errore",
+                {"messaggio": "Non sono riuscito a elaborare la richiesta, riprova."},
+            )
+
+    return StreamingResponse(genera(), media_type="text/event-stream")
 
 
 @router.post("/azioni/{azione_id}/conferma")

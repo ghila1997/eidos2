@@ -4,7 +4,6 @@ KeyError su un'azione pending di tipo Calendar (titolo/event_id/...)."""
 import json
 
 import httpx
-import pytest
 
 import cli
 from cli import _descrivi_azione, _interpreta_risposta
