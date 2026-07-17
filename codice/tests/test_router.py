@@ -1,21 +1,34 @@
-"""Trappola reale trovata testando a mano (2026-07-15): il system prompt
-non passava mai la data corrente al modello, che la indovinava sbagliando."""
+"""System prompt e prefisso turno del motore agente (vedi anche
+playbook/system-prompt-agenti.md)."""
 from datetime import datetime, timezone
 
-from orchestratore.router import _costruisci_system_prompt
+from orchestratore.agente import _costruisci_system_prompt, _prefisso_turno
 
 
-def test_system_prompt_include_data_corrente():
+def test_prefisso_turno_include_data_corrente():
+    """Trappola reale (2026-07-15): senza la data corrente il modello
+    indovina 'oggi' sbagliando. Col motore persistente il system prompt è
+    fisso alla connessione: la data vive nel prefisso di OGNI turno."""
     anno_corrente = str(datetime.now(timezone.utc).year)
+    prefisso = _prefisso_turno("testo")
+    assert "[adesso:" in prefisso
+    assert anno_corrente in prefisso
+    assert "[canale: testo]" in prefisso
+
+
+def test_system_prompt_spiega_i_canali():
+    """Un solo motore serve voce e testo: il prompt spiega il prefisso
+    [canale: ...] e lo stile da ascolto (apertura contestuale prima dei
+    tool, niente elenchi — trovato a STOP 2 Tappa 6)."""
     prompt = _costruisci_system_prompt({})
-    assert anno_corrente in prompt
-    assert "Data e ora attuali" in prompt
+    assert "<canali>" in prompt
+    assert "[canale: voce]" in prompt
+    assert "[adesso:" in prompt  # spiega che la data arriva nel prefisso
 
 
 def test_system_prompt_vieta_doppia_conferma_ridondante():
-    """Trappola reale trovata testando a mano (2026-07-15/16): il modello
-    chiedeva 'confermi?' in linguaggio naturale prima di chiamare il tool,
-    oltre al gate strutturale vero - due conferme per un'unica azione."""
+    """Trappola reale (2026-07-15/16): il modello chiedeva 'confermi?' in
+    linguaggio naturale prima del tool, oltre al gate strutturale vero."""
     prompt = _costruisci_system_prompt({})
     assert "non chiedere prima 'confermi?'" in prompt
 

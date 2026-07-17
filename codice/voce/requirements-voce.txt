@@ -1,0 +1,5 @@
+# Dipendenze SOLO per il client vocale locale (Tappa 6) - non vanno nel
+# requirements.txt del server: il backend non tocca mai l'audio (design
+# STOP 1, token effimeri + client diretto verso i fornitori).
+sounddevice==0.5.1
+websockets==14.1

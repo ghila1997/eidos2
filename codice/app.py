@@ -12,10 +12,26 @@ from fastapi import FastAPI
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+import asyncio  # noqa: E402
+import os  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
 from fondamenta.auth import router as auth_router  # noqa: E402
+from orchestratore import agente  # noqa: E402
 from orchestratore.router import router as orchestratore_router  # noqa: E402
 
-app = FastAPI(title="Eidos 2.0")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Prescaldo del motore agente in background: il primo turno dopo un
+    # riavvio non paga i ~10s di connessione (vedi agente.prescalda).
+    # In background per non bloccare l'avvio (healthcheck del deploy).
+    prescaldo = asyncio.create_task(agente.prescalda(os.environ.get("EIDOS_TENANT_ID")))
+    yield
+    prescaldo.cancel()
+
+
+app = FastAPI(title="Eidos 2.0", lifespan=_lifespan)
 app.include_router(auth_router)
 app.include_router(orchestratore_router)
 
