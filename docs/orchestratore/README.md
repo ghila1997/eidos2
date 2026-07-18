@@ -169,7 +169,9 @@ Test automatici: `codice/tests/test_tools.py`, `test_azioni.py`, `test_gmail_cli
 `test_classification.py`, `test_memoria_db.py`, `test_file_extraction.py`,
 `test_document_extraction.py`, `test_ingest_documento.py`, `test_image_normalization.py`,
 `test_gestione_documenti.py`, `test_router.py`, `test_cli.py`. Eval (non in CI):
-`codice/memoria/eval/eval_estrazione.py` — vedi [docs/eval.md](../eval.md).
+`codice/memoria/eval/eval_estrazione.py` (estrazione documenti) e
+`codice/memoria/eval/eval_retrieval.py` (retrieval di `search_memoria` con verità nota
+sui dati reali) — vedi [docs/eval.md](../eval.md).
 
 ## Decisioni rilevanti
 

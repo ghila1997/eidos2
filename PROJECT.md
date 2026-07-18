@@ -58,3 +58,5 @@ I README di modulo (`docs/{{modulo}}/README.md`) si scrivono quando il modulo vi
   verificare online prima di ogni modifica), estratta da Orchestratore e Agente Locale; si
   applica anche ai futuri subagenti specializzati
 - `notes/idee-salvate-da-eidos-v1.md` — idee recuperate dal progetto precedente, non ancora decise per questo progetto
+- `notes/idee-memoria-v2.md` — esito della valutazione (2026-07-19) di un documento esterno
+  di architettura della memoria: idee adottate/da decidere/respinte con motivazione
