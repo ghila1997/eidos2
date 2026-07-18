@@ -9,6 +9,7 @@ il testo aspetta la risposta intera, la voce consuma lo stream SSE.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -20,7 +21,7 @@ from pydantic import BaseModel
 
 from fondamenta.auth import get_sessione_corrente
 
-from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, voce_token
+from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, ponte, voce_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -102,22 +103,66 @@ async def chat_stream(body: ChatRequest, request: Request):
     Stessa auth, stesso motore e stesso gate di /chat."""
     sessione = await get_sessione_corrente(request)
     tenant_id = sessione["tenant_id"]
-    await _blocca_se_azione_pendente(tenant_id)
+    # il ponte parte SUBITO, in parallelo al controllo azioni pendenti
+    # (~0,3s di Supabase): ogni decimo di secondo qui è silenzio in cuffia
+    task_ponte = asyncio.create_task(ponte.genera_ponte(body.messaggio))
+    try:
+        await _blocca_se_azione_pendente(tenant_id)
+    except HTTPException:
+        task_ponte.cancel()
+        raise
 
     motore = await agente.motore_per(tenant_id)
 
     async def genera():
+        """Fonde due sorgenti: il turno dell'agente (in una coda alimentata da
+        un task) e il ponte vocale (Haiku puro, vedi ponte.py). Regola d'oro:
+        il ponte esce appena pronto SOLO se nessun testo del modello è ancora
+        uscito — mai due voci, mai un ponte superfluo."""
         pezzi: list[str] = []
+        coda: asyncio.Queue = asyncio.Queue()
+
+        async def alimenta():
+            try:
+                async for m in motore.turno(body.messaggio, canale="voce"):
+                    await coda.put(("messaggio", m))
+                await coda.put(("fine_turno", None))
+            except Exception as exc:
+                await coda.put(("eccezione", exc))
+
+        task_turno = asyncio.create_task(alimenta())
+        testo_visto = False
+        ponte_risolto = False
         try:
-            async for message in motore.turno(body.messaggio, canale="voce"):
+            while True:
+                if not ponte_risolto and task_ponte.done():
+                    ponte_risolto = True
+                    # result() None = astensione (saluti/chiacchiere): la
+                    # risposta vera arriva da sola, il ponte tace
+                    if not testo_visto and task_ponte.exception() is None and task_ponte.result():
+                        yield _riga_sse("ponte", {"testo": task_ponte.result()})
+                try:
+                    tipo, contenuto = await asyncio.wait_for(coda.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                if tipo == "eccezione":
+                    raise contenuto
+                if tipo == "fine_turno":
+                    break
+                message = contenuto
                 if isinstance(message, StreamEvent):
                     evento = message.event
-                    tipo = evento.get("type")
-                    if tipo == "content_block_delta":
+                    tipo_evento = evento.get("type")
+                    if tipo_evento == "content_block_delta":
                         delta = evento.get("delta") or {}
                         if delta.get("type") == "text_delta" and delta.get("text"):
+                            if not testo_visto:
+                                testo_visto = True
+                                if not ponte_risolto:
+                                    ponte_risolto = True
+                                    task_ponte.cancel()
                             yield _riga_sse("delta", {"testo": delta["text"]})
-                    elif tipo == "content_block_start":
+                    elif tipo_evento == "content_block_start":
                         blocco = evento.get("content_block") or {}
                         if blocco.get("type") == "tool_use":
                             yield _riga_sse(
@@ -143,6 +188,9 @@ async def chat_stream(body: ChatRequest, request: Request):
                 "errore",
                 {"messaggio": "Non sono riuscito a elaborare la richiesta, riprova."},
             )
+        finally:
+            task_ponte.cancel()
+            task_turno.cancel()
 
     return StreamingResponse(genera(), media_type="text/event-stream")
 

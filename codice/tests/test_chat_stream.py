@@ -101,9 +101,14 @@ class FakeSDKClient:
         self._corrente = next(self._turni)
 
     async def receive_response(self):
+        import asyncio
+
         if isinstance(self._corrente, Exception):
             raise self._corrente
         for messaggio in self._corrente:
+            if isinstance(messaggio, (int, float)):
+                await asyncio.sleep(messaggio)  # simula il "pensiero" del modello
+                continue
             yield messaggio
 
 
@@ -153,6 +158,23 @@ def test_stream_emette_delta_e_fine(base):
 
     istanza = FakeSDKClient.istanze[0]
     assert istanza.options.include_partial_messages is True
+    # MAI "user": trovato in reale (STOP 2, 2026-07-18) che il motore
+    # assorbiva la config personale di Claude Code del founder (un hook
+    # iniettava uno stile di scrittura compresso nelle risposte del prodotto)
+    assert istanza.options.setting_sources == ["project"]
+    # tools=None (default) espone TUTTI i nativi (Bash/Read/ToolSearch/...)
+    # al modello, non solo quelli permessi da allowed_tools - trovato in
+    # reale (STOP 2, 2026-07-19): il modello ha chiamato ToolSearch su un
+    # turno vocale. [] disabilita i nativi, i nostri MCP restano via
+    # allowed_tools; skills= riaccende solo la Skill esplicita del progetto.
+    assert istanza.options.tools == []
+    assert istanza.options.skills == ["redazione-email"]
+    # thinking adaptive+low: il modello decide da sé quanto ragionare, con
+    # un tetto basso - un saluto non deve pagare secondi di "pensiero" prima
+    # del primo token (trovato in reale, STOP 2 Tappa 6 2026-07-19: default
+    # 3,34s vs 1,52s misurati con questa config sullo stesso identico saluto)
+    assert istanza.options.thinking == {"type": "adaptive"}
+    assert istanza.options.effort == "low"
     # niente resume all'avvio: riprendere uno storico vecchio di giorni
     # rallentava ogni turno (~+2,5s misurati) e costava token per sempre;
     # il resume serve solo al recupero della conversazione viva (crash)
@@ -265,24 +287,107 @@ def test_doppio_crash_riparte_senza_resume(base):
     assert FakeSDKClient.istanze[2].options.resume is None
 
 
-async def test_prescalda_apre_il_client_in_anticipo(base):
+async def test_prescalda_apre_il_client_persistente_e_scalda_la_cache(base):
     """Il primo turno dopo un riavvio pagava ~10s di connessione: all'avvio
     del server il motore del founder si prepara in anticipo (se
-    EIDOS_TENANT_ID è configurato)."""
-    FakeSDKClient.copione = [[[_result("ok")]]]
+    EIDOS_TENANT_ID è configurato). Trovato in reale (2026-07-20): connect()
+    da solo non scrive la cache del prompt lato Anthropic (si scrive solo
+    alla prima query vera) - il primo turno reale restava lento comunque.
+    Si scalda con un client SEPARATO e a perdere (query usa-e-getta, poi
+    disconnesso): il client persistente vero non si porta dietro uno
+    scambio finto nella sua cronologia conversazionale."""
+    FakeSDKClient.copione = [
+        [[_result("turno-vero")]],  # istanza 0: il client persistente, usato dopo
+        [[_result("scaldata")]],  # istanza 1: client a perdere per il warm-up
+    ]
     await agente.prescalda(TENANT)
-    assert len(FakeSDKClient.istanze) == 1
-    assert FakeSDKClient.istanze[0].connesso is True
-    # il turno successivo riusa il client già caldo
+    assert len(FakeSDKClient.istanze) == 2
+    persistente, a_perdere = FakeSDKClient.istanze
+    assert persistente.connesso is True
+    assert persistente.prompts == []  # nessuno scambio finto nella sua storia
+    assert a_perdere.prompts == ["ok"]  # ha ricevuto la query di scaldamento
+    assert a_perdere.connesso is False  # disconnesso subito dopo
+
+    # il turno successivo riusa il client persistente già caldo, non ne crea altri
     motore = await agente.motore_per(TENANT)
     async for _ in motore.turno("ciao", canale="testo"):
         pass
-    assert len(FakeSDKClient.istanze) == 1
+    assert len(FakeSDKClient.istanze) == 2
+    assert persistente.prompts[-1].endswith("ciao")
 
 
 async def test_prescalda_senza_tenant_non_fa_nulla(base):
     await agente.prescalda(None)
     assert FakeSDKClient.istanze == []
+
+
+def _monta_ponte(monkeypatch, frase="Vediamo subito…", ritardo=0.0, fallisce=False):
+    import asyncio
+
+    async def fake_ponte(messaggio):
+        await asyncio.sleep(ritardo)
+        if fallisce:
+            raise RuntimeError("ponte giù")
+        return frase
+
+    monkeypatch.setattr(router_mod.ponte, "genera_ponte", fake_ponte)
+
+
+def test_ponte_astenuto_non_produce_evento(base):
+    """Haiku segnala NO_PONTE (saluti/chiacchiere) -> genera_ponte ritorna
+    None -> nessun evento ponte, il modello risponde da solo."""
+    _monta_ponte(base["monkeypatch"], frase=None, ritardo=0.05)
+    FakeSDKClient.copione = [[[0.3, _delta("Ciao! Dimmi pure."), _result("Ciao! Dimmi pure.")]]]
+    resp = _client().post("/chat/stream", json={"messaggio": "ciao chi sei?"})
+    nomi = [n for n, _ in _eventi_sse(resp.text)]
+    assert "ponte" not in nomi
+    assert "delta" in nomi
+
+
+def test_ponte_esce_prima_dei_delta_se_il_modello_tarda(base):
+    """Il ponte copre il silenzio iniziale: se Sonnet 'pensa', la frase di
+    presa in carico esce appena pronta, prima del primo delta."""
+    _monta_ponte(base["monkeypatch"], "Un attimo, ci guardo…", ritardo=0.05)
+    FakeSDKClient.copione = [[[0.5, _delta("Domani hai Derma."), _result("Domani hai Derma.")]]]
+    resp = _client().post("/chat/stream", json={"messaggio": "che impegni ho domani?"})
+    eventi = _eventi_sse(resp.text)
+    assert eventi[0] == ("ponte", {"testo": "Un attimo, ci guardo…"})
+    assert ("delta", {"testo": "Domani hai Derma."}) in eventi
+
+
+def test_ponte_scartato_se_il_delta_arriva_prima(base):
+    """Mai due voci: se Sonnet apre bocca subito, il ponte non esce."""
+    _monta_ponte(base["monkeypatch"], ritardo=0.5)
+    FakeSDKClient.copione = [[[_delta("Ciao!"), _result("Ciao!")]]]
+    resp = _client().post("/chat/stream", json={"messaggio": "ciao"})
+    nomi = [n for n, _ in _eventi_sse(resp.text)]
+    assert "ponte" not in nomi
+
+
+def test_ponte_fallito_non_rompe_lo_stream(base):
+    """Strato additivo: Haiku giù = stream identico a prima, nessun errore."""
+    _monta_ponte(base["monkeypatch"], fallisce=True)
+    FakeSDKClient.copione = [[[0.2, _delta("Eccomi."), _result("Eccomi.")]]]
+    resp = _client().post("/chat/stream", json={"messaggio": "ciao"})
+    eventi = _eventi_sse(resp.text)
+    nomi = [n for n, _ in eventi]
+    assert "ponte" not in nomi
+    assert "errore" not in nomi
+    assert ("delta", {"testo": "Eccomi."}) in eventi
+
+
+def test_ponte_esce_anche_dopo_un_tool_senza_testo(base):
+    """Se il modello va dritto ai tool senza aprire bocca, il ponte serve
+    ancora: la condizione è 'nessun testo', non 'nessun evento'."""
+    _monta_ponte(base["monkeypatch"], "Controllo subito…", ritardo=0.1)
+    FakeSDKClient.copione = [
+        [[_tool_start("mcp__eidos__search_events"), 0.5, _delta("Trovato."), _result("Trovato.")]]
+    ]
+    resp = _client().post("/chat/stream", json={"messaggio": "impegni?"})
+    eventi = _eventi_sse(resp.text)
+    nomi = [n for n, _ in eventi]
+    assert "ponte" in nomi
+    assert nomi.index("ponte") < nomi.index("delta")
 
 
 def test_stream_errore_persistente_da_evento_pulito(base):

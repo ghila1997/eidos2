@@ -9,6 +9,29 @@ from orchestratore import calendar_client
 _API_BASE = "https://www.googleapis.com/calendar/v3"
 
 
+@pytest.fixture(autouse=True)
+def _chiudi_client_condiviso():
+    """Il client HTTP riusato (vedi calendar_client._client) non deve
+    sopravvivere tra i test - ognuno riparte pulito."""
+    yield
+    calendar_client._client_condiviso = None
+
+
+async def test_client_http_riusato_tra_chiamate(respx_mock):
+    """Trovato in reale (STOP 2 Tappa 6, 2026-07-19): un httpx.AsyncClient
+    nuovo a ogni chiamata pagava l'handshake TLS ogni volta (~0,7s misurati,
+    contro ~0,1-0,2s riusando la connessione) - dominava la latenza di un
+    turno vocale col calendario."""
+    respx_mock.get(f"{_API_BASE}/users/me/calendarList").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    await calendar_client.lista_calendari("token")
+    primo_client = calendar_client._client_condiviso
+    await calendar_client.lista_calendari("token")
+    assert calendar_client._client_condiviso is primo_client
+    assert primo_client is not None
+
+
 @pytest.mark.asyncio
 async def test_crea_evento_senza_partecipanti_non_invia_notifiche(respx_mock):
     route = respx_mock.post(f"{_API_BASE}/calendars/primary/events").mock(

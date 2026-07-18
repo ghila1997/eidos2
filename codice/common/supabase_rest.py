@@ -9,6 +9,21 @@ from __future__ import annotations
 
 import os
 
+import httpx
+
+# Client HTTP riusato tra le chiamate PostgREST: un client nuovo a ogni
+# richiesta paga l'handshake TLS ogni volta (~0,7s misurati su Google
+# Calendar, stesso principio qui) - trovato dominare la latenza di un turno
+# vocale (STOP 2 Tappa 6, 2026-07-19), azioni.py chiamato due volte a turno.
+_client_condiviso: httpx.AsyncClient | None = None
+
+
+def client() -> httpx.AsyncClient:
+    global _client_condiviso
+    if _client_condiviso is None:
+        _client_condiviso = httpx.AsyncClient(timeout=30.0)
+    return _client_condiviso
+
 
 def supabase_settings() -> tuple[str, str]:
     url = os.environ["SUPABASE_URL"].rstrip("/")

@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
-
+from common.supabase_rest import client as _supabase_client
 from common.supabase_rest import rest_headers, supabase_settings
 from memoria import gestione_documenti
 from . import calendar_client, drive_client, gmail_client
@@ -41,12 +40,11 @@ class AzioneGiaRisolta(Exception):
 
 async def crea_azione_pending(tenant_id: str, tipo: str, payload: dict[str, Any]) -> str:
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{url}/rest/v1/azioni_pending",
-            headers={**rest_headers(key), "Prefer": "return=representation"},
-            json={"tenant_id": tenant_id, "tipo": tipo, "payload": payload},
-        )
+    resp = await _supabase_client().post(
+        f"{url}/rest/v1/azioni_pending",
+        headers={**rest_headers(key), "Prefer": "return=representation"},
+        json={"tenant_id": tenant_id, "tipo": tipo, "payload": payload},
+    )
     resp.raise_for_status()
     return resp.json()[0]["id"]
 
@@ -56,16 +54,15 @@ async def ottieni_azione_pendente_tenant(tenant_id: str) -> dict[str, Any] | Non
     la chat si blocca finché non viene risolta (conferma o rifiuto) - vedi
     design Tappa 2, "regola pratica" sulla conferma pendente."""
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{url}/rest/v1/azioni_pending",
-            params={
-                "tenant_id": f"eq.{tenant_id}",
-                "stato": f"eq.{STATO_IN_ATTESA}",
-                "limit": "1",
-            },
-            headers=rest_headers(key),
-        )
+    resp = await _supabase_client().get(
+        f"{url}/rest/v1/azioni_pending",
+        params={
+            "tenant_id": f"eq.{tenant_id}",
+            "stato": f"eq.{STATO_IN_ATTESA}",
+            "limit": "1",
+        },
+        headers=rest_headers(key),
+    )
     resp.raise_for_status()
     rows = resp.json()
     return rows[0] if rows else None
@@ -73,12 +70,11 @@ async def ottieni_azione_pendente_tenant(tenant_id: str) -> dict[str, Any] | Non
 
 async def ottieni_azione(tenant_id: str, azione_id: str) -> dict[str, Any] | None:
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{url}/rest/v1/azioni_pending",
-            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{azione_id}"},
-            headers=rest_headers(key),
-        )
+    resp = await _supabase_client().get(
+        f"{url}/rest/v1/azioni_pending",
+        params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{azione_id}"},
+        headers=rest_headers(key),
+    )
     resp.raise_for_status()
     rows = resp.json()
     return rows[0] if rows else None
@@ -86,13 +82,12 @@ async def ottieni_azione(tenant_id: str, azione_id: str) -> dict[str, Any] | Non
 
 async def _aggiorna_stato(azione_id: str, stato: str) -> None:
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(
-            f"{url}/rest/v1/azioni_pending",
-            params={"id": f"eq.{azione_id}"},
-            headers=rest_headers(key),
-            json={"stato": stato},
-        )
+    resp = await _supabase_client().patch(
+        f"{url}/rest/v1/azioni_pending",
+        params={"id": f"eq.{azione_id}"},
+        headers=rest_headers(key),
+        json={"stato": stato},
+    )
     resp.raise_for_status()
 
 

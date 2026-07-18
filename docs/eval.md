@@ -64,6 +64,27 @@ Ultima esecuzione: 2026-07-19 — **10/10 PASS** (Voyage `voyage-3`, dati reali 
 - I nomi propri dentro sheet/documenti vengono recuperati dagli embedding (PASS a 0.37):
   nessuna evidenza, oggi, che serva un indice lessicale (BM25) aggiuntivo.
 
+## Voce — ponte vocale (Tappa 6)
+
+Script: `codice/orchestratore/eval/eval_ponte.py`
+
+```
+cd codice && .venv\Scripts\python.exe -m orchestratore.eval.eval_ponte
+```
+
+Verifica la decisione di Haiku (`ponte.genera_ponte`): astenersi (`NO_PONTE`) dove non
+c'è lavoro da coprire, generare la presa in carico dove c'è — incluso il caso trovato a
+STOP 2 (2026-07-19): una richiesta che inizia con un saluto ("Ciao, che impegno domani?")
+contiene comunque lavoro e non va scambiata per chiacchiera.
+
+| Gruppo | Casi | Attesa |
+|---|---|---|
+| Lavoro puro | impegni settimana, manda mail, cancella evento | frase ponte |
+| Saluto + lavoro | "Ciao, che impegno domani?", "buongiorno! mi cerchi la fattura..." | frase ponte (il saluto non conta) |
+| Nessun lavoro | "ciao, chi sei?", "come stai?", "grazie mille", "ok perfetto" | astensione (`None`) |
+
+Ultima esecuzione: 2026-07-19 — **9/9 PASS** (Haiku `claude-haiku-4-5-20251001`).
+
 ## Non coperto (rimandato)
 
 Eval sul comportamento dell'agente conversazionale completo (scelta dei tool, recupero

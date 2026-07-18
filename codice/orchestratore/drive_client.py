@@ -46,15 +46,16 @@ class DriveError(Exception):
 
 
 async def ottieni_access_token(tenant_id: str) -> str:
-    credenziale = await oauth_core.get_credenziale(tenant_id, oauth_drive.PROVIDER_DRIVE)
-    if credenziale is None:
+    # access_token_valido tiene una cache in-memory (~1,6s risparmiati a ogni
+    # tool call oltre il primo, vedi oauth_core.py) - non rifà il giro
+    # Supabase+Google se l'access token è ancora valido.
+    token = await oauth_core.access_token_valido(tenant_id, oauth_drive.PROVIDER_DRIVE)
+    if token is None:
         raise DriveError(
             "Nessuna credenziale Drive collegata per questo tenant: "
             "serve prima /oauth/google_drive/authorize"
         )
-    refresh_token = oauth_core.decifra_refresh_token(credenziale["refresh_token_cifrato"])
-    tokens = await oauth_core.rinnova_access_token(refresh_token)
-    return tokens["access_token"]
+    return token
 
 
 def _headers(access_token: str) -> dict:

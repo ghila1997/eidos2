@@ -82,6 +82,8 @@ async def _turno_risposta(
     parser = ParserSSE()
     azione: dict | None = None
     errore_stream: str | None = None
+    t0 = time.monotonic()  # fine del parlato: base del cronometro per turno
+    tempi: dict[str, float] = {}
     ultimo_audio = time.monotonic()
 
     async def pronuncia(frase: str) -> None:
@@ -138,9 +140,16 @@ async def _turno_risposta(
                         # la risposta sta arrivando: da qui nessun riempitivo,
                         # anche se l'audio vero deve ancora iniziare a suonare
                         riempitivi.su_audio_risposta()
+                        tempi.setdefault("risposta", time.monotonic() - t0)
                         print(data["testo"], end="", flush=True)
                         for frase in spezza.aggiungi(data["testo"]):
                             await pronuncia(frase)
+                    elif nome == "ponte":
+                        # presa in carico generata da Haiku (server): arriva
+                        # solo se il modello non ha ancora aperto bocca
+                        tempi["ponte"] = time.monotonic() - t0
+                        print(f"(ponte: {data['testo']})", flush=True)
+                        await pronuncia(data["testo"])
                     elif nome == "tool_in_corso":
                         ultimo_tool = data["tool"]
                         print(f"\n[{data['tool']}…]", flush=True)
@@ -165,7 +174,9 @@ async def _turno_risposta(
                 f"Serve la tua conferma: {_descrivi_azione(azione)}. "
                 "Premi Invio e rispondi con un sì o con un no."
             )
-        print()
+        pezzi_tempo = [f"{nome} {secondi:.1f}s" for nome, secondi in tempi.items()]
+        pezzi_tempo.append(f"totale {time.monotonic() - t0:.1f}s")
+        print(f"\n(tempi: {' · '.join(pezzi_tempo)})")
         return azione
     finally:
         if watchdog is not None:

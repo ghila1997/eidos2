@@ -26,6 +26,14 @@ def test_system_prompt_spiega_i_canali():
     assert "[adesso:" in prompt  # spiega che la data arriva nel prefisso
 
 
+def test_system_prompt_vieta_presa_in_carico_doppia_in_voce():
+    """Trappola reale (STOP 2, 2026-07-18): il ponte pronuncia la presa in
+    carico E il modello apriva con la sua ('Controllo il calendario...') —
+    doppione in cuffia. Il prompt ora vieta l'apertura di attesa in voce."""
+    prompt = _costruisci_system_prompt({})
+    assert "NON aprire con frasi di presa in carico" in prompt
+
+
 def test_system_prompt_vieta_doppia_conferma_ridondante():
     """Trappola reale (2026-07-15/16): il modello chiedeva 'confermi?' in
     linguaggio naturale prima del tool, oltre al gate strutturale vero."""

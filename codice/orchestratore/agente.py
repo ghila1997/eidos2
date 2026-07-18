@@ -32,6 +32,7 @@ from . import tools
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5"
+SKILL_REDAZIONE_EMAIL = "redazione-email"
 
 _motori: dict[str, "MotoreAgente"] = {}
 _lock_registro = asyncio.Lock()
@@ -57,6 +58,34 @@ async def prescalda(tenant_id: str | None) -> None:
                 motore._client = await motore._nuovo_client(None)
             except Exception:
                 logger.warning("prescaldo del motore fallito, si riproverà al primo turno", exc_info=True)
+                return
+    await _scalda_cache_prompt(motore)
+
+
+async def _scalda_cache_prompt(motore: "MotoreAgente") -> None:
+    """Query usa-e-getta su un client SEPARATO, poi disconnesso: connect()
+    da solo non basta a scrivere la cache del prompt lato Anthropic (si
+    scrive solo alla prima query vera, trovato in reale 2026-07-20) - senza
+    questo il primo turno del founder restava lento nonostante il prescaldo
+    del sottoprocesso. Un client a perdere (non quello persistente) perché
+    la cache è per contenuto (system prompt + tool), non per sessione: il
+    turno reale del founder la trova già scritta senza portarsi dietro uno
+    scambio finto nella sua cronologia conversazionale."""
+    try:
+        options = await motore._opzioni(resume=None)
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+        try:
+            await client.query("ok")
+            async for _ in client.receive_response():
+                pass
+        finally:
+            await client.disconnect()
+    except Exception:
+        logger.warning(
+            "scaldamento cache prompt fallito, il primo turno reale sarà più lento",
+            exc_info=True,
+        )
 
 
 def _prefisso_turno(canale: str) -> str:
@@ -81,12 +110,15 @@ def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
         "timestamp visti in risposte di tool precedenti. Se non specificato "
         "altrimenti, assumi che il founder sia nel fuso orario Europe/Rome.\n"
         "- Con [canale: voce] la risposta viene letta ad alta voce all'utente "
-        "man mano che la generi: se stai per usare dei tool, apri con una "
-        "breve frase naturale che dice cosa stai per fare (es. 'Un attimo, "
-        "guardo il calendario...') — mentre i tool girano l'utente non vede "
-        "nulla, e il silenzio non segnalato rompe la conversazione. Tieni le "
-        "risposte adatte all'ascolto: frasi scorrevoli e concise, niente "
-        "elenchi puntati, tabelle o formattazione visiva.\n"
+        "man mano che la generi. Una breve presa in carico ('un attimo, "
+        "controllo...') viene GIÀ pronunciata da un sistema esterno prima che "
+        "tu inizi: NON aprire con frasi di presa in carico o di attesa, "
+        "andresti in doppione — vai dritto alla sostanza. Tieni le risposte "
+        "adatte all'ascolto: frasi scorrevoli, niente elenchi puntati, "
+        "tabelle o formattazione visiva. Sii BREVE di default: 1-3 frasi, "
+        "solo l'essenziale che risponde alla domanda — chi ascolta non può "
+        "scorrere indietro, e una risposta lunga blocca il dialogo. Estendi "
+        "solo se l'utente chiede esplicitamente dettagli.\n"
         "- Con [canale: testo] rispondi normalmente.\n"
         "</canali>\n\n"
         "<ruolo>\n"
@@ -158,18 +190,50 @@ class MotoreAgente:
         # documentato per il redeploy (README Orchestratore).
         self._session_id: str | None = None
 
-    async def _nuovo_client(self, resume: str | None) -> ClaudeSDKClient:
+    async def _opzioni(self, resume: str | None) -> ClaudeAgentOptions:
         preferenze = await memoria_db.get_preferenze(self.tenant_id)
         server = tools.crea_server(self.tenant_id)
-        options = ClaudeAgentOptions(
+        return ClaudeAgentOptions(
             model=MODEL,
             system_prompt=_costruisci_system_prompt(preferenze),
             mcp_servers={tools.SERVER_NAME: server},
             allowed_tools=tools.ALLOWED_TOOLS,
-            setting_sources=["user", "project"],
+            # tools=None (default) espone TUTTI i tool nativi (Bash, Read,
+            # ToolSearch, ...) al modello - allowed_tools limita solo cosa è
+            # auto-permesso, non cosa è VISIBILE. Trovato in reale (STOP 2,
+            # 2026-07-19): il modello ha chiamato ToolSearch su un turno
+            # vocale, un giro extra inutile. [] disabilita tutti i nativi;
+            # i nostri MCP restano disponibili via allowed_tools (verificato
+            # sul sorgente dell'SDK installato, non sono "built-in tools").
+            tools=[],
+            # skills è l'unico punto per accendere le skill (aggiunge da sé
+            # il tool Skill e configura setting_sources per esse - non serve
+            # toccare allowed_tools a mano): solo le skill di progetto
+            # esplicite, non tutte quelle scopribili.
+            skills=[SKILL_REDAZIONE_EMAIL],
+            # Adaptive+low: il modello decide da sé quanto ragionare, con un
+            # tetto basso di default - un saluto non deve pagare secondi di
+            # "pensiero" prima del primo token (verificato in reale, STOP 2
+            # 2026-07-19: 3,34s con thinking di default -> 1,52s su un
+            # saluto identico; il thinking resta disponibile sui casi che ne
+            # hanno davvero bisogno, es. 2,30s su un problema logico multi-
+            # step, sempre col tetto "low"). Un solo motore per voce e
+            # testo: la scelta vale per entrambi i canali, deciso con
+            # l'utente pesando il trade-off qualità/velocità.
+            thinking={"type": "adaptive"},
+            effort="low",
+            # MAI "user": caricherebbe la config personale di Claude Code di
+            # chi ospita il server dentro l'agente del PRODOTTO — trovato in
+            # reale a STOP 2 (2026-07-18): un hook personale del founder
+            # iniettava uno stile di scrittura compresso nelle risposte.
+            # "project" resta per CLAUDE.md/skill di progetto (.claude/).
+            setting_sources=["project"],
             resume=resume,
             include_partial_messages=True,
         )
+
+    async def _nuovo_client(self, resume: str | None) -> ClaudeSDKClient:
+        options = await self._opzioni(resume)
         client = ClaudeSDKClient(options=options)
         await client.connect()
         return client

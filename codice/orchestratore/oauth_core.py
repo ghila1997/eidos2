@@ -150,3 +150,30 @@ async def get_credenziale(tenant_id: str, provider: str) -> dict | None:
     resp.raise_for_status()
     rows = resp.json()
     return rows[0] if rows else None
+
+
+# Cache in-memory dell'access token, per (tenant_id, provider). Perché: ogni
+# chiamata a un tool Calendar/Drive/Gmail rifaceva Supabase + refresh Google
+# da zero (~1,6s misurati, STOP 2 Tappa 6 2026-07-19), anche a token ancora
+# valido - un access token Google dura ~1h. Margine di sicurezza: si rinnova
+# un po' prima della scadenza esatta, mai al limite.
+_CACHE_ACCESS_TOKEN: dict[tuple[str, str], tuple[str, float]] = {}
+_MARGINE_SICUREZZA_SECONDI = 60.0
+
+
+async def access_token_valido(tenant_id: str, provider: str) -> str | None:
+    """None = nessuna credenziale collegata (il chiamante solleva il suo
+    errore specifico con l'URL di autorizzazione giusto per il provider)."""
+    chiave = (tenant_id, provider)
+    in_cache = _CACHE_ACCESS_TOKEN.get(chiave)
+    if in_cache is not None and time.monotonic() < in_cache[1]:
+        return in_cache[0]
+
+    credenziale = await get_credenziale(tenant_id, provider)
+    if credenziale is None:
+        return None
+    refresh_token = decifra_refresh_token(credenziale["refresh_token_cifrato"])
+    tokens = await rinnova_access_token(refresh_token)
+    scadenza = time.monotonic() + tokens.get("expires_in", 3600) - _MARGINE_SICUREZZA_SECONDI
+    _CACHE_ACCESS_TOKEN[chiave] = (tokens["access_token"], scadenza)
+    return tokens["access_token"]

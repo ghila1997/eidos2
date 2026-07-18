@@ -11,6 +11,7 @@ from __future__ import annotations
 from . import oauth_core
 from .oauth_core import (  # re-esportati, invariato per i chiamanti esistenti
     StatoNonValido as StatoNonValido,
+    access_token_valido as access_token_valido,
     cifra_refresh_token as cifra_refresh_token,
     decifra_refresh_token as decifra_refresh_token,
     genera_state as genera_state,

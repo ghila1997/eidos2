@@ -37,15 +37,16 @@ class GmailError(Exception):
 
 
 async def ottieni_access_token(tenant_id: str) -> str:
-    credenziale = await oauth.get_credenziale(tenant_id, oauth.PROVIDER_GMAIL)
-    if credenziale is None:
+    # access_token_valido tiene una cache in-memory (~1,6s risparmiati a ogni
+    # tool call oltre il primo, vedi oauth_core.py) - non rifà il giro
+    # Supabase+Google se l'access token è ancora valido.
+    token = await oauth.access_token_valido(tenant_id, oauth.PROVIDER_GMAIL)
+    if token is None:
         raise GmailError(
             "Nessuna credenziale Gmail collegata per questo tenant: "
             "serve prima /oauth/google/authorize"
         )
-    refresh_token = oauth.decifra_refresh_token(credenziale["refresh_token_cifrato"])
-    tokens = await oauth.rinnova_access_token(refresh_token)
-    return tokens["access_token"]
+    return token
 
 
 def _headers(access_token: str) -> dict:

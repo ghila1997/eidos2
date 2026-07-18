@@ -18,6 +18,7 @@ impostazioni/ACL dei calendari (amministrazione, fuori scope).
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -34,16 +35,31 @@ class CalendarError(Exception):
     """Errore nella chiamata a Google Calendar API."""
 
 
+# Client HTTP riusato tra le chiamate: un client nuovo a ogni richiesta paga
+# l'handshake TLS ogni volta (~0,7s misurati contro ~0,1-0,2s riusando la
+# connessione, STOP 2 Tappa 6 2026-07-19) - dominava la latenza di un turno
+# vocale col calendario. Stesso principio del client Anthropic in ponte.py.
+_client_condiviso: httpx.AsyncClient | None = None
+
+
+def _client() -> httpx.AsyncClient:
+    global _client_condiviso
+    if _client_condiviso is None:
+        _client_condiviso = httpx.AsyncClient(timeout=30.0)
+    return _client_condiviso
+
+
 async def ottieni_access_token(tenant_id: str) -> str:
-    credenziale = await oauth_core.get_credenziale(tenant_id, oauth_calendar.PROVIDER_CALENDAR)
-    if credenziale is None:
+    # access_token_valido tiene una cache in-memory (~1,6s risparmiati a ogni
+    # tool call oltre il primo, vedi oauth_core.py) - non rifà il giro
+    # Supabase+Google se l'access token è ancora valido.
+    token = await oauth_core.access_token_valido(tenant_id, oauth_calendar.PROVIDER_CALENDAR)
+    if token is None:
         raise CalendarError(
             "Nessuna credenziale Calendar collegata per questo tenant: "
             "serve prima /oauth/google_calendar/authorize"
         )
-    refresh_token = oauth_core.decifra_refresh_token(credenziale["refresh_token_cifrato"])
-    tokens = await oauth_core.rinnova_access_token(refresh_token)
-    return tokens["access_token"]
+    return token
 
 
 def _headers(access_token: str) -> dict:
@@ -51,10 +67,9 @@ def _headers(access_token: str) -> dict:
 
 
 async def lista_calendari(access_token: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{_API_BASE}/users/me/calendarList", headers=_headers(access_token)
-        )
+    resp = await _client().get(
+        f"{_API_BASE}/users/me/calendarList", headers=_headers(access_token)
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar calendarList.list fallita: {resp.status_code}")
     return [
@@ -163,26 +178,29 @@ async def cerca_eventi(
     else:
         calendari = [{"id": CALENDARIO_SCRITTURA_DEFAULT, "nome": "primary"}]
 
-    risultati: list[dict[str, Any]] = []
-    for calendario in calendari:
-        params: dict[str, str] = {"singleEvents": "true", "orderBy": "startTime", "maxResults": "50"}
-        if query:
-            params["q"] = query
-        if date_from:
-            params["timeMin"] = date_from
-        if date_to:
-            params["timeMax"] = date_to
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{_API_BASE}/calendars/{calendario['id']}/events",
-                params=params,
-                headers=_headers(access_token),
-            )
+    params: dict[str, str] = {"singleEvents": "true", "orderBy": "startTime", "maxResults": "50"}
+    if query:
+        params["q"] = query
+    if date_from:
+        params["timeMin"] = date_from
+    if date_to:
+        params["timeMax"] = date_to
+
+    async def _eventi_di(calendario: dict[str, Any]) -> list[dict[str, Any]]:
+        resp = await _client().get(
+            f"{_API_BASE}/calendars/{calendario['id']}/events",
+            params=params,
+            headers=_headers(access_token),
+        )
         if resp.status_code != 200:
             raise CalendarError(f"Calendar events.list fallita: {resp.status_code}")
-        for item in resp.json().get("items", []):
-            risultati.append(estrai_evento(item, calendario["nome"]))
-    return risultati
+        return [estrai_evento(item, calendario["nome"]) for item in resp.json().get("items", [])]
+
+    # In parallelo, non in sequenza: con più calendari collegati (comune per
+    # un umano single-operator) le chiamate sequenziali sommavano un
+    # round-trip di rete ciascuna (STOP 2 Tappa 6, 2026-07-19).
+    per_calendario = await asyncio.gather(*(_eventi_di(c) for c in calendari))
+    return [evento for lista in per_calendario for evento in lista]
 
 
 async def sincronizza_eventi(
@@ -205,11 +223,10 @@ async def sincronizza_eventi(
         request_params = dict(params)
         if page_token:
             request_params["pageToken"] = page_token
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{_API_BASE}/calendars/{calendar_id}/events",
-                params=request_params, headers=_headers(access_token),
-            )
+        resp = await _client().get(
+            f"{_API_BASE}/calendars/{calendar_id}/events",
+            params=request_params, headers=_headers(access_token),
+        )
         if resp.status_code == 410:
             return await sincronizza_eventi(access_token, calendar_id, None)
         if resp.status_code != 200:
@@ -226,11 +243,10 @@ async def sincronizza_eventi(
 
 async def ottieni_evento(access_token: str, event_id: str, calendario: str | None = None) -> dict[str, Any]:
     calendar_id = await _risolvi_calendario_id(access_token, calendario)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
-            headers=_headers(access_token),
-        )
+    resp = await _client().get(
+        f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        headers=_headers(access_token),
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar events.get fallita: {resp.status_code}")
     return estrai_evento(resp.json(), calendario)
@@ -265,11 +281,10 @@ async def crea_evento(
     params: dict[str, str] = {"sendUpdates": "all" if partecipanti else "none"}
     if videochiamata:
         params["conferenceDataVersion"] = "1"
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{_API_BASE}/calendars/{calendar_id}/events",
-            params=params, headers=_headers(access_token), json=body,
-        )
+    resp = await _client().post(
+        f"{_API_BASE}/calendars/{calendar_id}/events",
+        params=params, headers=_headers(access_token), json=body,
+    )
     if resp.status_code not in (200, 201):
         raise CalendarError(f"Calendar events.insert fallita: {resp.status_code}")
     return estrai_evento(resp.json(), calendario or "primary")
@@ -290,11 +305,10 @@ async def aggiorna_evento(
     params: dict[str, str] = {"sendUpdates": "all" if notifica else "none"}
     if campi.get("videochiamata"):
         params["conferenceDataVersion"] = "1"
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(
-            f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
-            params=params, headers=_headers(access_token), json=body,
-        )
+    resp = await _client().patch(
+        f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        params=params, headers=_headers(access_token), json=body,
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar events.patch fallita: {resp.status_code}")
     return estrai_evento(resp.json(), calendario)
@@ -305,11 +319,10 @@ async def elimina_evento(
 ) -> None:
     calendar_id = await _risolvi_calendario_id(access_token, calendario)
     params: dict[str, str] = {"sendUpdates": "all" if notifica else "none"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(
-            f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
-            params=params, headers=_headers(access_token),
-        )
+    resp = await _client().delete(
+        f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        params=params, headers=_headers(access_token),
+    )
     if resp.status_code not in (200, 204):
         raise CalendarError(f"Calendar events.delete fallita: {resp.status_code}")
 
@@ -321,11 +334,10 @@ async def rispondi_invito(
     (identificato da `self: true`, marcato da Google), mai gli altri
     partecipanti - trappola esplicita da test."""
     calendar_id = await _risolvi_calendario_id(access_token, calendario)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
-            headers=_headers(access_token),
-        )
+    resp = await _client().get(
+        f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        headers=_headers(access_token),
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar events.get fallita: {resp.status_code}")
     evento_grezzo = resp.json()
@@ -338,13 +350,12 @@ async def rispondi_invito(
     if not trovato:
         raise CalendarError("Non risulti tra i partecipanti di questo evento")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(
-            f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
-            params={"sendUpdates": "all"},
-            headers=_headers(access_token),
-            json={"attendees": attendees},
-        )
+    resp = await _client().patch(
+        f"{_API_BASE}/calendars/{calendar_id}/events/{event_id}",
+        params={"sendUpdates": "all"},
+        headers=_headers(access_token),
+        json={"attendees": attendees},
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar events.patch (RSVP) fallita: {resp.status_code}")
     return estrai_evento(resp.json(), calendario)
@@ -356,16 +367,15 @@ async def controlla_disponibilita(
     """Rispetta `transparency`: un evento segnato "libero" da chi lo ha
     creato non risulta come occupato qui (comportamento nativo di Google
     freeBusy, non filtrato da noi)."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{_API_BASE}/freeBusy",
-            headers=_headers(access_token),
-            json={
-                "timeMin": date_from,
-                "timeMax": date_to,
-                "items": [{"id": email} for email in persone],
-            },
-        )
+    resp = await _client().post(
+        f"{_API_BASE}/freeBusy",
+        headers=_headers(access_token),
+        json={
+            "timeMin": date_from,
+            "timeMax": date_to,
+            "items": [{"id": email} for email in persone],
+        },
+    )
     if resp.status_code != 200:
         raise CalendarError(f"Calendar freeBusy.query fallita: {resp.status_code}")
     calendari = resp.json().get("calendars", {})
