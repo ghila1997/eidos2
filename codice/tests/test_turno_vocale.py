@@ -55,12 +55,18 @@ class FakeMotore:
     def __init__(self, eventi_turno):
         self._eventi = eventi_turno
         self.testi_ricevuti = []
+        # Settato a fine turno (mai a tick contati) - i test a livello di
+        # gestisci_sessione_vocale lo usano per sapere con certezza quando
+        # il tentativo ha finito di mettere i suoi eventi in coda, invece di
+        # contare un numero fisso di sleep(0) prima di "disconnettere".
+        self.concluso = asyncio.Event()
 
     async def turno(self, messaggio, canale):
         await asyncio.sleep(0)  # Cede il controllo al loop per far eseguire task_ponte
         self.testi_ricevuti.append(messaggio)
         for e in self._eventi:
             yield e
+        self.concluso.set()
 
 
 async def _svuota_coda(coda: asyncio.Queue) -> list:
@@ -138,25 +144,53 @@ async def test_esegui_tentativo_errore_pulito_mai_traceback(monkeypatch):
 
 
 class RicevitoreScriptato:
-    """Ricevi() scriptato: una lista di messaggi client, poi ConnessioneChiusa."""
+    """Ricevi() scriptato: una lista di 'passi' client, poi ConnessioneChiusa.
 
-    def __init__(self, messaggi: list[dict]):
-        self._messaggi = iter(messaggi)
+    Un passo e' o un messaggio (dict, restituito subito) o un
+    asyncio.Event (atteso prima di restituire il passo successivo) - mai un
+    numero fisso di tick: un vero WS impiega piu' tempo a rilevare la
+    disconnessione di quanto ne impieghi a consegnare un messaggio gia'
+    bufferizzato (che qui torna sincrono), e un tentativo appena avviato
+    deve avere modo di girare prima che la 'disconnessione' arrivi - ma
+    quel momento e' un evento preciso (il fake motore lo segnala), non un
+    numero di scheduler tick indovinato a tentativi.
+
+    'attesa_dopo_esaurimento', se dato, e' atteso dopo l'ultimo passo e
+    prima di sollevare ConnessioneChiusa (es. 'aspetta che il tentativo
+    abbia finito di mettere i suoi eventi in coda'). 'chiudi_alla_fine=False'
+    fa restare il ricevitore sospeso invece di chiudere la connessione - per
+    i test che vogliono isolare un comportamento dall'interrompi() legittimo
+    di chiusura sessione e cancellano il task esplicitamente."""
+
+    def __init__(
+        self,
+        passi: list[dict | asyncio.Event],
+        attesa_dopo_esaurimento: asyncio.Event | None = None,
+        chiudi_alla_fine: bool = True,
+        timeout: float = 2.0,
+    ):
+        self._passi = iter(passi)
+        self._attesa_dopo_esaurimento = attesa_dopo_esaurimento
+        self._chiudi_alla_fine = chiudi_alla_fine
+        self._timeout = timeout
+        self._sospensione_infinita = asyncio.Event()  # mai settato di proposito
 
     async def __call__(self) -> dict:
-        try:
-            return next(self._messaggi)
-        except StopIteration:
-            # Un vero WS impiega piu' tempo a rilevare la disconnessione di
-            # quanto ne impieghi a consegnare un messaggio gia' bufferizzato
-            # (che qui torna sincrono): cede il controllo al loop piu' volte
-            # - non un timer reale (instabile, dipendente dal carico della
-            # macchina: verificato sperimentalmente non affidabile qui) - cosi'
-            # un tentativo appena avviato ha modo di girare per intero prima
-            # che la 'disconnessione' arrivi, proprio come farebbe una vera rete.
-            for _ in range(20):
-                await asyncio.sleep(0)
-            raise ConnessioneChiusa()
+        while True:
+            try:
+                passo = next(self._passi)
+            except StopIteration:
+                break
+            if isinstance(passo, asyncio.Event):
+                await asyncio.wait_for(passo.wait(), timeout=self._timeout)
+                continue
+            return passo
+
+        if self._attesa_dopo_esaurimento is not None:
+            await asyncio.wait_for(self._attesa_dopo_esaurimento.wait(), timeout=self._timeout)
+        if not self._chiudi_alla_fine:
+            await self._sospensione_infinita.wait()
+        raise ConnessioneChiusa()
 
 
 class RegistroInviati:
@@ -194,7 +228,10 @@ async def test_parziale_singolo_avvia_un_tentativo_e_lo_completa(monkeypatch, _f
     motore.interrompi = interrompi
     _fake_motore_per["t1"] = motore
 
-    ricevi = RicevitoreScriptato([{"tipo": "parziale", "testo": "ciao"}])
+    ricevi = RicevitoreScriptato(
+        [{"tipo": "parziale", "testo": "ciao"}],
+        attesa_dopo_esaurimento=motore.concluso,
+    )
     invia = RegistroInviati()
     await gestisci_sessione_vocale("t1", ricevi, invia)
 
@@ -212,10 +249,17 @@ async def test_parziale_diverso_interrompe_e_riparte(monkeypatch, _fake_motore_p
         def __init__(self):
             self.interrotto = 0
             self.chiamate = 0
+            # Un evento per chiamata, settato come primissima azione di
+            # turno() (prima di ogni yield) - segnale esplicito e
+            # deterministico di "questo tentativo e' davvero partito", mai
+            # un numero di scheduler tick indovinato.
+            self.avviato = [asyncio.Event(), asyncio.Event()]
 
         async def turno(self, messaggio, canale):
+            indice = self.chiamate
+            self.avviato[indice].set()
             self.chiamate += 1
-            if self.chiamate == 1:
+            if indice == 0:
                 yield _delta("Un pezzo...")
                 await evento_bloccante.wait()  # resta appeso finche' non interrotto
             else:
@@ -229,10 +273,14 @@ async def test_parziale_diverso_interrompe_e_riparte(monkeypatch, _fake_motore_p
     motore = MotoreLentoPoiVeloce()
     _fake_motore_per["t1"] = motore
 
-    ricevi = RicevitoreScriptato([
-        {"tipo": "parziale", "testo": "che impegni ho domani"},
-        {"tipo": "finale", "testo": "che impegni ho dopodomani"},
-    ])
+    ricevi = RicevitoreScriptato(
+        [
+            {"tipo": "parziale", "testo": "che impegni ho domani"},
+            motore.avviato[0],  # aspetta che il primo tentativo sia davvero partito
+            {"tipo": "finale", "testo": "che impegni ho dopodomani"},
+        ],
+        attesa_dopo_esaurimento=motore.avviato[1],  # aspetta che il secondo sia partito
+    )
     invia = RegistroInviati()
     await gestisci_sessione_vocale("t1", ricevi, invia)
 
@@ -255,10 +303,13 @@ async def test_finale_che_combacia_non_riavvia(monkeypatch, _fake_motore_per):
     motore.interrompi = interrompi
     _fake_motore_per["t1"] = motore
 
-    ricevi = RicevitoreScriptato([
-        {"tipo": "parziale", "testo": "che impegni ho domani"},
-        {"tipo": "finale", "testo": "Che impegni ho domani?"},
-    ])
+    ricevi = RicevitoreScriptato(
+        [
+            {"tipo": "parziale", "testo": "che impegni ho domani"},
+            {"tipo": "finale", "testo": "Che impegni ho domani?"},
+        ],
+        attesa_dopo_esaurimento=motore.concluso,
+    )
     invia = RegistroInviati()
     await gestisci_sessione_vocale("t1", ricevi, invia)
 
@@ -283,6 +334,108 @@ async def test_azione_pendente_blocca_avvio_tentativo(monkeypatch, _fake_motore_
     assert motore.testi_ricevuti == []  # nessun tentativo avviato
 
 
+async def test_azione_pendente_blocca_riavvio_dopo_interrupt(monkeypatch, _fake_motore_per):
+    """Trappola del reviewer (Task 5): il gate azione-pendente valeva solo
+    sul primo avvio, non sul riavvio dopo un ripensamento dell'utente - ma
+    il tool del tentativo GIA' in corso puo' aver gia' creato un'azione
+    pending (Safety Supervisor -> ask_user) prima che il parziale diverso
+    arrivi. In quel caso il riavvio va bloccato esattamente come il primo
+    avvio (CLAUDE.md: gate unico, nessuna eccezione) - il tentativo in
+    corso non va toccato (mai interrompi()), e non deve partirne uno nuovo."""
+    _monta_ponte(monkeypatch, ritorno=None)
+
+    class MotoreCheSiBlocca:
+        """Resta appeso finche' non interrotto - tiene un tentativo
+        affidabilmente 'in corso' mentre il test invia il secondo parziale."""
+
+        def __init__(self):
+            self.interrotto = 0
+            self.chiamate = 0
+            self.avviato = asyncio.Event()  # settato come prima azione di turno(), prima di ogni yield
+            self._sospeso = asyncio.Event()
+            # Settato a fine turno() - il tentativo e' un task orfano
+            # (fire-and-forget nel codice di produzione): serve per
+            # ripulirlo deterministicamente a fine test invece di lasciarlo
+            # pending al teardown dell'event loop (stesso ragionamento del
+            # 'concluso' di MotoreAppeso sopra).
+            self.concluso = asyncio.Event()
+
+        async def turno(self, messaggio, canale):
+            self.avviato.set()
+            self.chiamate += 1
+            yield _delta("Un pezzo...")
+            await self._sospeso.wait()
+            self.concluso.set()
+
+        async def interrompi(self):
+            self.interrotto += 1
+            self._sospeso.set()
+
+    motore = MotoreCheSiBlocca()
+    _fake_motore_per["t1"] = motore
+
+    # La prima chiamata al gate (prima di avviare il tentativo) non trova
+    # nulla; la seconda (sul riavvio) simula che il tool del tentativo in
+    # corso abbia gia' creato un'azione pending.
+    chiamate_gate = 0
+    gate_valutato_su_riavvio = asyncio.Event()
+
+    async def azione_pendente_solo_su_riavvio(tenant_id):
+        nonlocal chiamate_gate
+        chiamate_gate += 1
+        if chiamate_gate == 1:
+            return None
+        risultato = {"id": "az-1", "tipo": "send_email", "payload": {}}
+        gate_valutato_su_riavvio.set()
+        return risultato
+
+    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", azione_pendente_solo_su_riavvio)
+
+    # chiudi_alla_fine=False: dopo il secondo parziale il ricevitore resta
+    # sospeso invece di sollevare ConnessioneChiusa - isoliamo l'effetto del
+    # gate dall'interrompi() legittimo che la chiusura sessione causerebbe
+    # comunque (il task viene cancellato esplicitamente dal test).
+    ricevi = RicevitoreScriptato(
+        [
+            {"tipo": "parziale", "testo": "manda la mail a mario"},
+            motore.avviato,  # aspetta che il tentativo sia davvero partito
+            {"tipo": "parziale", "testo": "manda la mail a luigi"},
+        ],
+        chiudi_alla_fine=False,
+    )
+    invia = RegistroInviati()
+    task = asyncio.create_task(gestisci_sessione_vocale("t1", ricevi, invia))
+    try:
+        # gate_valutato_su_riavvio si settao dentro il mock del gate, come
+        # ultima azione prima del return - nessun await genuino separa quel
+        # punto dal successivo `await invia({"evento": "errore", ...})` nel
+        # ramo di riavvio (ne' il mock ne' RegistroInviati sospendono mai):
+        # quando questo wait si risolve, l'evento "errore" e' gia' stato
+        # invia()to nella stessa porzione ininterrotta di esecuzione.
+        await asyncio.wait_for(gate_valutato_su_riavvio.wait(), timeout=2)
+
+        assert motore.interrotto == 0  # il tentativo in corso non va mai toccato dal riavvio bloccato
+        assert motore.chiamate == 1  # nessun secondo tentativo avviato
+        assert invia.eventi[-1] == {
+            "evento": "errore",
+            "messaggio": "C'e' un'azione in attesa di conferma, risolvila prima di continuare.",
+        }
+        assert {"evento": "annullato"} not in invia.eventi
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # Pulizia: il tentativo rimasto sospeso e' un task orfano
+        # (fire-and-forget nel codice di produzione, mai atteso da
+        # gestisci_sessione_vocale) - lo sblocchiamo e aspettiamo che si
+        # concluda, altrimenti l'event loop lo distrugge ancora pending al
+        # termine del test.
+        await motore.interrompi()
+        await asyncio.wait_for(motore.concluso.wait(), timeout=2)
+
+
 async def test_chiusura_connessione_con_tentativo_in_corso_lo_interrompe(monkeypatch, _fake_motore_per):
     _monta_ponte(monkeypatch, ritorno=None)
     non_finisce_mai = asyncio.Event()
@@ -290,10 +443,19 @@ async def test_chiusura_connessione_con_tentativo_in_corso_lo_interrompe(monkeyp
     class MotoreAppeso:
         def __init__(self):
             self.interrotto = 0
+            # Settato quando turno() esce dal wait bloccato (dopo
+            # interrompi()) - il tentativo, spawnato come task e mai atteso
+            # da gestisci_sessione_vocale (fire-and-forget), continua a
+            # girare in background anche dopo che la funzione ritorna: senza
+            # aspettare questo segnale il test finirebbe prima che quel task
+            # abbia finito di ripulirsi (task_ponte incluso), lasciando una
+            # coroutine 'mai awaited' al teardown dell'event loop.
+            self.concluso = asyncio.Event()
 
         async def turno(self, messaggio, canale):
             yield _delta("...")
             await non_finisce_mai.wait()
+            self.concluso.set()
 
         async def interrompi(self):
             self.interrotto += 1
@@ -305,5 +467,6 @@ async def test_chiusura_connessione_con_tentativo_in_corso_lo_interrompe(monkeyp
     ricevi = RicevitoreScriptato([{"tipo": "parziale", "testo": "ciao"}])
     invia = RegistroInviati()
     await gestisci_sessione_vocale("t1", ricevi, invia)
+    await asyncio.wait_for(motore.concluso.wait(), timeout=2)
 
     assert motore.interrotto == 1

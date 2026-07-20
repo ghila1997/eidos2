@@ -160,6 +160,23 @@ async def gestisci_sessione_vocale(
                         _esegui_tentativo(motore, nuovo_testo, tentativo_id, coda, tenant_id)
                     )
                 elif _normalizza(nuovo_testo) != _normalizza(tentativo_testo):
+                    # Stesso gate del ramo di primo avvio (vedi sopra), non
+                    # un'eccezione per il riavvio: un tool del tentativo in
+                    # corso puo' aver gia' creato un'azione pending (via
+                    # Safety Supervisor -> ask_user) prima che l'utente
+                    # ripensasse le parole - se e' cosi', il tentativo in
+                    # corso resta intatto (mai interrotto/riavviato) finche'
+                    # quell'azione non e' risolta, altrimenti un secondo
+                    # tentativo partirebbe libero con un'azione non
+                    # confermata gia' nel DB (CLAUDE.md, gate unico, nessuna
+                    # eccezione per casi che "sembrano" a basso rischio).
+                    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+                    if azione_pendente is not None:
+                        await invia({
+                            "evento": "errore",
+                            "messaggio": "C'e' un'azione in attesa di conferma, risolvila prima di continuare.",
+                        })
+                        continue
                     await motore.interrompi()
                     await invia({"evento": "annullato"})
                     tentativo_id += 1
