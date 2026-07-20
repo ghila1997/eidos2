@@ -122,6 +122,9 @@ async def _pronuncia_eventi_turno(sessione: SessioneVoce) -> dict | None:
                         await ses.invia(per_tts(frase))
                     continue
                 if tipo == "errore":
+                    for frase in spezza.chiudi():
+                        ses = await assicura_tts(client_http)
+                        await ses.invia(per_tts(frase))
                     print(f"\n{evento['messaggio']}")
                     ses = await assicura_tts(client_http)
                     await ses.invia(per_tts(evento["messaggio"]))
@@ -178,9 +181,14 @@ async def _pronuncia_singola(client: httpx.AsyncClient, testo: str) -> None:
     try:
         tokens = await _token_voce(client)
         sessione = await tts.apri_sessione(tokens["elevenlabs"]["token"])
-        await sessione.invia(per_tts(testo))
-        await sessione.chiudi()
     except (tts.ErroreTTS, RuntimeError):
+        return
+    try:
+        try:
+            await sessione.invia(per_tts(testo))
+        finally:
+            await sessione.chiudi()
+    except Exception:
         pass
 
 
