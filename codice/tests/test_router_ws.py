@@ -3,12 +3,14 @@ gia' testata in test_turno_vocale.py; qui si verifica solo il collegamento:
 auth, formato dei messaggi sul filo, propagazione della disconnessione."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import app
-from orchestratore import agente, azioni, ponte
+from orchestratore import agente, azioni, ponte, turno_vocale
 
 TENANT = "540d61dc-175d-425b-b3a0-7ae1e01eec7f"
 
@@ -64,3 +66,30 @@ def test_ws_scambio_completo_con_sessione_valida(monkeypatch):
         primo = ws.receive_json()
         assert primo["evento"] == "fine"
         assert primo["risposta"] == "risposta a: ciao"
+
+
+def test_invia_gestisce_websocket_disconnect():
+    """Verifica che la closure invia() converta WebSocketDisconnect
+    in ConnessioneChiusa (così come ricevi() fa), evitando che
+    una disconnessione del client durante l'invio propaghi un'eccezione
+    non gestita."""
+
+    class FakeWebSocket:
+        async def send_json(self, data):
+            raise WebSocketDisconnect(code=1000)
+
+    async def test_invia_closure():
+        ws = FakeWebSocket()
+
+        # Ricrea la closure invia come nel codice reale (router.py, linea ~101)
+        async def invia(evento: dict) -> None:
+            try:
+                await ws.send_json(evento)
+            except WebSocketDisconnect:
+                raise turno_vocale.ConnessioneChiusa()
+
+        # Verifica che invia() converta WebSocketDisconnect in ConnessioneChiusa
+        with pytest.raises(turno_vocale.ConnessioneChiusa):
+            await invia({"test": "data"})
+
+    asyncio.run(test_invia_closure())

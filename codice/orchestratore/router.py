@@ -99,7 +99,10 @@ async def chat_stream_ws(websocket: WebSocket):
             raise turno_vocale.ConnessioneChiusa()
 
     async def invia(evento: dict) -> None:
-        await websocket.send_json(evento)
+        try:
+            await websocket.send_json(evento)
+        except WebSocketDisconnect:
+            raise turno_vocale.ConnessioneChiusa()
 
     try:
         await turno_vocale.gestisci_sessione_vocale(sessione["tenant_id"], ricevi, invia)
