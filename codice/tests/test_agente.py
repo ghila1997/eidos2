@@ -63,7 +63,7 @@ def _reset(monkeypatch):
 
 
 async def test_interrompi_su_motore_senza_client_non_fa_nulla():
-    """Nessun turno mai partito: interrompi() e' un no-op sicuro."""
+    """Nessun turno mai partito: interrompi() è un no-op sicuro."""
     motore = await agente.motore_per(TENANT)
     await motore.interrompi()  # non deve sollevare
 

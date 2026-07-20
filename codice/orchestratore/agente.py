@@ -257,7 +257,7 @@ class MotoreAgente:
                 await self._client.interrupt()
             except Exception:
                 logger.warning(
-                    "interrompi() fallito, il tentativo in corso proseguira'",
+                    "interrompi() fallito, il tentativo in corso proseguirà",
                     exc_info=True,
                 )
 
