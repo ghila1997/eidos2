@@ -83,3 +83,41 @@ async def test_interrompi_chiama_interrupt_sul_client_connesso():
         pass  # il turno finisce, il client resta connesso e riusabile
     await motore.interrompi()
     assert FakeSDKClient.istanze[0].interrotto == 1
+
+
+async def test_opzioni_motore_isola_i_tool_nativi_e_le_skill():
+    """tools=None (default) esporrebbe TUTTI i nativi (Bash/Read/
+    ToolSearch) al modello - trovato in reale (STOP 2, 2026-07-19): il
+    modello ha chiamato ToolSearch su un turno vocale."""
+    motore = await agente.motore_per(TENANT)
+    opzioni = await motore._opzioni(resume=None)
+    assert opzioni.tools == []
+    assert opzioni.skills == ["redazione-email"]
+
+
+async def test_opzioni_motore_thinking_adaptive_low():
+    """Verificato in reale: 3,34s con thinking di default -> 1,52s su un
+    saluto identico con adaptive+low (STOP 2, 2026-07-19)."""
+    motore = await agente.motore_per(TENANT)
+    opzioni = await motore._opzioni(resume=None)
+    assert opzioni.thinking == {"type": "adaptive"}
+    assert opzioni.effort == "low"
+
+
+async def test_opzioni_motore_niente_config_utente():
+    """MAI 'user': caricherebbe la config personale di Claude Code di chi
+    ospita il server dentro l'agente del prodotto (trovato in reale, STOP 2
+    2026-07-18)."""
+    motore = await agente.motore_per(TENANT)
+    opzioni = await motore._opzioni(resume=None)
+    assert opzioni.setting_sources == ["project"]
+
+
+async def test_opzioni_motore_niente_resume_di_sessioni_vecchie():
+    """Niente resume all'avvio: riprendere uno storico vecchio rallentava
+    ogni turno (~+2,5s misurati) e costava token per sempre."""
+    motore = await agente.motore_per(TENANT)
+    opzioni = await motore._opzioni(resume=None)
+    assert opzioni.resume is None
+    opzioni_con_resume = await motore._opzioni(resume="sess-viva")
+    assert opzioni_con_resume.resume == "sess-viva"
