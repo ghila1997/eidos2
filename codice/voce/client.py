@@ -1,17 +1,15 @@
-"""Client vocale push-to-talk (Tappa 6, incremento 2).
+"""Client vocale push-to-talk con generazione speculativa (Tappa 6,
+incr.4).
 
-Premi Invio, parla: l'endpointing Deepgram chiude il turno (300ms di
-silenzio), il transcript va a POST /chat/stream, le frasi della risposta
-vanno in sintesi mentre il modello genera. Le azioni distruttive arrivano
-come azione pending: la descrizione viene letta ad alta voce e la conferma
-è il confronto deterministico del transcript con l'elenco chiuso del CLI
-(voce/conferme.py) — mai un'interpretazione del modello.
+Premi Invio, parla: appena il transcript resta stabile (RilevatoreFrase),
+si manda un 'parziale' al server - che puo' gia' iniziare a generare prima
+ancora che Deepgram segnali la fine della frase (endpointing 300ms). Se
+continui a parlare, il server interrompe da solo il tentativo sbagliato
+(evento 'annullato') e il client smette di pronunciarlo, in silenzio.
 
-Il backend resta l'unico motore agentico; qui c'è solo I/O audio
-(design STOP 1). Riuso deliberato di cli.py per login/cookie/descrizioni.
-Tutto il turno è asincrono: lo stream HTTP, il WS TTS e il watchdog dei
-riempitivi convivono nello stesso event loop — un HTTP sincrono qui
-bloccherebbe l'audio durante i tool lunghi.
+Il backend resta l'unico motore agentico; qui c'e' solo I/O audio e la
+decisione locale di QUANDO mandare un parziale (design doc:
+docs/superpowers/specs/2026-07-19-speculativo-vocale-design.md).
 """
 from __future__ import annotations
 
@@ -26,17 +24,17 @@ from . import config, stt, tts
 from .audio import ErroreAudio, Microfono
 from .conferme import interpreta_transcript
 from .frasi import SpezzaFrasi
-from .riempitivi import GestoreRiempitivi
+from .rilevatore_frase import RilevatoreFrase
 from .sanificazione import per_tts
-from .sse import ParserSSE
+from .sessione_ws import ErroreSessioneVoce, SessioneVoce
 
 
-def _login_sincrono() -> dict:
+def _login_sincrono() -> str:
     """Login (o riuso cookie) con un client sincrono usa-e-getta; ritorna
-    i cookie validi da passare al client asincrono del loop vocale."""
+    l'header Cookie da passare alla connessione WebSocket."""
     with httpx.Client(base_url=config.BASE_URL, cookies=_carica_cookie(), timeout=60.0) as client:
         if client.get("/me").status_code == 200:
-            return dict(client.cookies)
+            return "; ".join(f"{k}={v}" for k, v in client.cookies.items())
         print(f"Login su {config.BASE_URL}")
         email = input("Email: ").strip()
         password = input("Password: ").strip()
@@ -46,7 +44,7 @@ def _login_sincrono() -> dict:
             raise SystemExit(1)
         _salva_cookie(resp.cookies)
         print("Login riuscito.\n")
-        return dict(resp.cookies)
+        return "; ".join(f"{k}={v}" for k, v in resp.cookies.items())
 
 
 async def _token_voce(client: httpx.AsyncClient) -> dict:
@@ -57,209 +55,165 @@ async def _token_voce(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
-async def _ascolta(token_deepgram: str) -> str:
+async def _ascolta_e_specula(
+    sessione: SessioneVoce, token_deepgram: str
+) -> str:
+    """Ascolta il microfono; ogni volta che il transcript resta stabile
+    (RilevatoreFrase) manda un 'parziale' al server - non aspetta piu' solo
+    il transcript finale per iniziare a informare il server. Ritorna il
+    transcript finale (per la stampa a schermo/gestione conferme)."""
     microfono = Microfono()
+    rilevatore = RilevatoreFrase()
     print("… parla pure (mi fermo quando fai una pausa)")
 
     def su_interim(testo: str) -> None:
         print(f"\r  {testo}", end="", flush=True)
+        candidato = rilevatore.aggiorna(testo, time.monotonic())
+        if candidato:
+            asyncio.ensure_future(sessione.manda_parziale(candidato))
 
     transcript = await stt.trascrivi_turno(token_deepgram, microfono, su_interim)
     print()
+    if transcript:
+        await sessione.manda_finale(transcript)
     return transcript
 
 
-async def _turno_risposta(
-    client: httpx.AsyncClient, messaggio: str, sessione_tts: tts.SessioneTTS
-) -> dict | None:
-    """Invia il messaggio a /chat/stream e pronuncia la risposta in streaming.
-    La sessione TTS arriva già aperta (preparata mentre l'utente parlava):
-    il timer del riempitivo parte da qui, cioè dalla fine del parlato, senza
-    pagare token e handshake nel silenzio (trovato a STOP 2, ~5s percepiti).
-    Ritorna l'azione in attesa di conferma, se il turno ne ha creata una."""
+async def _pronuncia_eventi_turno(sessione: SessioneVoce) -> dict | None:
+    """Consuma gli eventi del server per il turno corrente, li pronuncia,
+    gestisce 'annullato' fermando subito il TTS senza dire nulla. Ritorna
+    l'azione in attesa di conferma (se il turno ne ha creata una)."""
     spezza = SpezzaFrasi()
-    riempitivi = GestoreRiempitivi()
-    parser = ParserSSE()
+    sessione_tts: tts.SessioneTTS | None = None
     azione: dict | None = None
-    errore_stream: str | None = None
-    t0 = time.monotonic()  # fine del parlato: base del cronometro per turno
-    tempi: dict[str, float] = {}
-    ultimo_audio = time.monotonic()
 
-    async def pronuncia(frase: str) -> None:
-        nonlocal ultimo_audio
-        pulita = per_tts(frase)
-        if pulita:
-            await sessione_tts.invia(pulita)
-            ultimo_audio = time.monotonic()
+    async def assicura_tts(client: httpx.AsyncClient) -> tts.SessioneTTS:
+        nonlocal sessione_tts
+        if sessione_tts is None:
+            tokens = await _token_voce(client)
+            sessione_tts = await tts.apri_sessione(tokens["elevenlabs"]["token"])
+        return sessione_tts
 
-    ultimo_tool = ""
-
-    async def watchdog_attesa() -> None:
-        """Il silenzio non segnalato è il guasto peggiore (spec §5): il primo
-        riempitivo parte su timer, non solo sull'evento tool — il modello può
-        'pensare' secondi prima di chiamare il primo tool (trovato a STOP 2)."""
-        while True:
-            await asyncio.sleep(0.5)
-            if sessione_tts.casse.ha_suonato:
-                riempitivi.su_audio_risposta()
-            trascorso = time.monotonic() - ultimo_audio
-            if trascorso > config.PRIMO_RIEMPITIVO_SECONDI:
-                frase = riempitivi.su_tool(ultimo_tool)
-                if frase:
-                    print(f"\n(riempitivo: {frase})", flush=True)
-                    await pronuncia(frase)
-            if trascorso > config.ATTESA_LUNGA_SECONDI:
-                frase = riempitivi.su_attesa_lunga()
-                if frase:
-                    print(f"\n(riempitivo: {frase})", flush=True)
-                    await pronuncia(frase)
-
-    watchdog = asyncio.create_task(watchdog_attesa()) if config.RIEMPITIVI_ATTIVI else None
     try:
-        async with client.stream(
-            "POST", "/chat/stream", json={"messaggio": messaggio}
-        ) as resp:
-            if resp.status_code == 409:
-                await resp.aread()
-                dettaglio = resp.json()["detail"]
-                return {
-                    "id": dettaglio["azione_id"],
-                    "tipo": dettaglio["tipo"],
-                    "payload": dettaglio["payload"],
-                }
-            if resp.status_code != 200:
-                await resp.aread()
-                print(f"Errore ({resp.status_code}): {resp.text}")
-                await pronuncia("Ho avuto un problema a elaborare la richiesta.")
-                return None
-
-            async for chunk in resp.aiter_text():
-                for nome, data in parser.aggiungi(chunk):
-                    if nome == "delta":
-                        # la risposta sta arrivando: da qui nessun riempitivo,
-                        # anche se l'audio vero deve ancora iniziare a suonare
-                        riempitivi.su_audio_risposta()
-                        tempi.setdefault("risposta", time.monotonic() - t0)
-                        print(data["testo"], end="", flush=True)
-                        for frase in spezza.aggiungi(data["testo"]):
-                            await pronuncia(frase)
-                    elif nome == "ponte":
-                        # presa in carico generata da Haiku (server): arriva
-                        # solo se il modello non ha ancora aperto bocca
-                        tempi["ponte"] = time.monotonic() - t0
-                        print(f"(ponte: {data['testo']})", flush=True)
-                        await pronuncia(data["testo"])
-                    elif nome == "tool_in_corso":
-                        ultimo_tool = data["tool"]
-                        print(f"\n[{data['tool']}…]", flush=True)
-                        if config.RIEMPITIVI_ATTIVI:
-                            frase = riempitivi.su_tool(data["tool"])
-                            if frase:
-                                print(f"(riempitivo: {frase})", flush=True)
-                                await pronuncia(frase)
-                    elif nome == "fine":
-                        azione = data.get("azione_in_attesa")
-                    elif nome == "errore":
-                        errore_stream = data["messaggio"]
-
-        for frase in spezza.chiudi():
-            await pronuncia(frase)
-        if errore_stream:
-            print(f"\n{errore_stream}")
-            await pronuncia(errore_stream)
-        if azione:
-            print(f"\n\n[Conferma richiesta] {_descrivi_azione(azione)}")
-            await pronuncia(
-                f"Serve la tua conferma: {_descrivi_azione(azione)}. "
-                "Premi Invio e rispondi con un sì o con un no."
-            )
-        pezzi_tempo = [f"{nome} {secondi:.1f}s" for nome, secondi in tempi.items()]
-        pezzi_tempo.append(f"totale {time.monotonic() - t0:.1f}s")
-        print(f"\n(tempi: {' · '.join(pezzi_tempo)})")
-        return azione
+        async with httpx.AsyncClient(
+            base_url=config.BASE_URL, cookies=_carica_cookie(), timeout=180.0
+        ) as client_http:
+            async for evento in sessione.eventi():
+                tipo = evento["evento"]
+                if tipo == "annullato":
+                    if sessione_tts is not None:
+                        await sessione_tts.chiudi()
+                        sessione_tts = None
+                    spezza = SpezzaFrasi()
+                    print("\n(tentativo annullato, riparto)", flush=True)
+                    continue
+                if tipo == "ponte":
+                    print(f"(ponte: {evento['testo']})", flush=True)
+                    ses = await assicura_tts(client_http)
+                    await ses.invia(per_tts(evento["testo"]))
+                    continue
+                if tipo == "tool_in_corso":
+                    print(f"\n[{evento['tool']}…]", flush=True)
+                    continue
+                if tipo == "delta":
+                    print(evento["testo"], end="", flush=True)
+                    for frase in spezza.aggiungi(evento["testo"]):
+                        ses = await assicura_tts(client_http)
+                        await ses.invia(per_tts(frase))
+                    continue
+                if tipo == "errore":
+                    print(f"\n{evento['messaggio']}")
+                    ses = await assicura_tts(client_http)
+                    await ses.invia(per_tts(evento["messaggio"]))
+                    break
+                if tipo == "fine":
+                    for frase in spezza.chiudi():
+                        ses = await assicura_tts(client_http)
+                        await ses.invia(per_tts(frase))
+                    azione = evento.get("azione_in_attesa")
+                    if azione:
+                        print(f"\n\n[Conferma richiesta] {_descrivi_azione(azione)}")
+                        ses = await assicura_tts(client_http)
+                        await ses.invia(per_tts(
+                            f"Serve la tua conferma: {_descrivi_azione(azione)}. "
+                            "Premi Invio e rispondi con un si' o con un no."
+                        ))
+                    print()
+                    break
     finally:
-        if watchdog is not None:
-            watchdog.cancel()
-        await sessione_tts.chiudi()
+        # garantito anche sui percorsi d'eccezione (connessione WS persa,
+        # errore TTS): senza questo, un'eccezione qui sopra lascerebbe la
+        # sessione TTS aperta e il thread delle casse bloccato in attesa
+        # (Casse.chiudi_e_attendi non viene mai chiamato) - stessa garanzia
+        # che il vecchio client.py dava con un try/finally attorno al turno.
+        if sessione_tts is not None:
+            await sessione_tts.chiudi()
+    return azione
 
 
-async def _turno_conferma(
-    client: httpx.AsyncClient, azione: dict, transcript: str, sessione_tts: tts.SessioneTTS
-) -> bool:
-    """True se l'azione è stata risolta (confermata o annullata)."""
-
-    async def esito_vocale(testo: str) -> None:
-        print(testo)
-        await sessione_tts.invia(per_tts(testo))
-
+async def _turno_conferma(azione: dict, transcript: str) -> bool:
+    """True se l'azione e' stata risolta (confermata o annullata). Le
+    conferme passano ancora dal REST esistente (/azioni/{id}/conferma),
+    non dal WebSocket - e' un'azione singola, non un turno di generazione."""
     conferma = interpreta_transcript(transcript)
-    if conferma is None:
-        await esito_vocale("Non ho capito: rispondi con un sì o con un no chiaro.")
-        return False
-    resp = await client.post(f"/azioni/{azione['id']}/conferma", json={"conferma": conferma})
-    if resp.status_code != 200:
-        print(f"Errore nella conferma ({resp.status_code}): {resp.text}")
-        await esito_vocale("Non sono riuscito a registrare la conferma.")
-        return False
-    stato = resp.json()["stato"]
-    await esito_vocale("Fatto." if stato == "confermata_inviata" else "Azione annullata.")
-    return True
+    async with httpx.AsyncClient(
+        base_url=config.BASE_URL, cookies=_carica_cookie(), timeout=60.0
+    ) as client:
+        if conferma is None:
+            await _pronuncia_singola(client, "Non ho capito: rispondi con un si' o con un no chiaro.")
+            return False
+        resp = await client.post(f"/azioni/{azione['id']}/conferma", json={"conferma": conferma})
+        if resp.status_code != 200:
+            print(f"Errore nella conferma ({resp.status_code}): {resp.text}")
+            await _pronuncia_singola(client, "Non sono riuscito a registrare la conferma.")
+            return False
+        stato = resp.json()["stato"]
+        esito = "Fatto." if stato == "confermata_inviata" else "Azione annullata."
+        print(esito)
+        await _pronuncia_singola(client, esito)
+        return True
 
 
-async def _chiudi_silenziosamente(task_tts: asyncio.Task) -> None:
-    """Chiude una sessione TTS preparata ma rimasta inutilizzata."""
+async def _pronuncia_singola(client: httpx.AsyncClient, testo: str) -> None:
     try:
-        sessione = await task_tts
+        tokens = await _token_voce(client)
+        sessione = await tts.apri_sessione(tokens["elevenlabs"]["token"])
+        await sessione.invia(per_tts(testo))
         await sessione.chiudi()
-    except Exception:
+    except (tts.ErroreTTS, RuntimeError):
         pass
 
 
-async def _loop(cookies: dict) -> None:
-    async with httpx.AsyncClient(
-        base_url=config.BASE_URL, cookies=cookies, timeout=180.0
-    ) as client:
-        print("Eidos voce — premi Invio e parla (Ctrl+C per uscire)\n")
-        azione_in_attesa: dict | None = None
-        while True:
-            task_tts: asyncio.Task | None = None
-            try:
-                await asyncio.to_thread(input, "[Invio per parlare] ")
-                # token una volta sola per turno; la sessione TTS si apre
-                # MENTRE l'utente parla, così alla fine del parlato è pronta
-                tokens = await _token_voce(client)
-                task_tts = asyncio.create_task(
-                    tts.apri_sessione(tokens["elevenlabs"]["token"])
-                )
-                transcript = await _ascolta(tokens["deepgram"]["token"])
-                if not transcript:
-                    print("Non ho sentito nulla, riprova.")
-                    await _chiudi_silenziosamente(task_tts)
-                    continue
-                print(f"Tu: {transcript}\n")
-                sessione_tts = await task_tts
+async def _loop(cookie: str) -> None:
+    sessione = await SessioneVoce.connetti(cookie)
+    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
+        tokens = await _token_voce(client)
+    token_deepgram = tokens["deepgram"]["token"]
 
-                if azione_in_attesa is not None:
-                    try:
-                        if await _turno_conferma(
-                            client, azione_in_attesa, transcript, sessione_tts
-                        ):
-                            azione_in_attesa = None
-                    finally:
-                        await sessione_tts.chiudi()
-                    continue
+    print("Eidos voce — premi Invio e parla (Ctrl+C per uscire)\n")
+    azione_in_attesa: dict | None = None
+    while True:
+        try:
+            await asyncio.to_thread(input, "[Invio per parlare] ")
+            transcript = await _ascolta_e_specula(sessione, token_deepgram)
+            if not transcript:
+                print("Non ho sentito nulla, riprova.")
+                continue
+            print(f"Tu: {transcript}\n")
 
-                azione_in_attesa = await _turno_risposta(client, transcript, sessione_tts)
-            except (stt.ErroreSTT, tts.ErroreTTS, ErroreAudio, RuntimeError) as exc:
-                print(f"\n{exc}")
-                if task_tts is not None and not task_tts.done():
-                    await _chiudi_silenziosamente(task_tts)
+            if azione_in_attesa is not None:
+                if await _turno_conferma(azione_in_attesa, transcript):
+                    azione_in_attesa = None
+                continue
+
+            azione_in_attesa = await _pronuncia_eventi_turno(sessione)
+        except (stt.ErroreSTT, tts.ErroreTTS, ErroreAudio, ErroreSessioneVoce, RuntimeError) as exc:
+            print(f"\n{exc}")
 
 
 def main() -> None:
     try:
-        cookies = _login_sincrono()
-        asyncio.run(_loop(cookies))
+        cookie = _login_sincrono()
+        asyncio.run(_loop(cookie))
     except KeyboardInterrupt:
         print("\nA presto.")
