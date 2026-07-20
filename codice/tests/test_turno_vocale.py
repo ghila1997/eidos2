@@ -56,6 +56,7 @@ class FakeMotore:
         self.testi_ricevuti = []
 
     async def turno(self, messaggio, canale):
+        await asyncio.sleep(0)  # Cede il controllo al loop per far eseguire task_ponte
         self.testi_ricevuti.append(messaggio)
         for e in self._eventi:
             yield e

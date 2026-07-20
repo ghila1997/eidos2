@@ -84,20 +84,6 @@ async def _esegui_tentativo(
                 if messaggio.subtype == "success" and messaggio.result:
                     pezzi.append(messaggio.result)
 
-        # Dopo che il motore finisce, controlla se il ponte è pronto e non è stato ancora inviato.
-        # Se il ponte non è ancora finito (es. il modello ha risposto velocemente),
-        # attendiamo un attimo per dargli una chance di completare.
-        if not ponte_risolto and not task_ponte.done():
-            try:
-                await asyncio.wait_for(task_ponte, timeout=0.1)
-            except asyncio.TimeoutError:
-                pass
-
-        if not ponte_risolto and task_ponte.done():
-            ponte_risolto = True
-            if not testo_visto and task_ponte.exception() is None and task_ponte.result():
-                await _emetti({"evento": "ponte", "testo": task_ponte.result()})
-
         azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
         await _emetti(
             {"evento": "fine", "risposta": "\n".join(pezzi), "azione_in_attesa": azione_appena_creata}
