@@ -5,26 +5,21 @@ decisione "Orchestratore server-side").
 
 Il motore conversazionale è il ClaudeSDKClient persistente di agente.py
 (Tappa 6): /chat e /chat/stream sono due viste sullo stesso motore —
-il testo aspetta la risposta intera, la voce consuma lo stream SSE.
+il testo aspetta la risposta intera, la voce parla su una sessione
+WebSocket persistente (vedi turno_vocale.py).
 """
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-
 from claude_agent_sdk import ResultMessage
-from claude_agent_sdk.types import StreamEvent
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from fondamenta.auth import get_sessione_corrente
 
-from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, ponte, voce_token
+from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, turno_vocale, voce_token
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -82,117 +77,34 @@ async def voice_token(request: Request):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
-def _riga_sse(evento: str, data: dict | None) -> str:
-    return f"event: {evento}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _nome_tool_pulito(nome: str) -> str:
-    """`mcp__<server>__<tool>` -> `<tool>`; i tool nativi restano invariati.
-    Il client vocale mappa questo nome sui riempitivi ('un attimo, controllo...')."""
-    if nome.startswith("mcp__"):
-        return nome.split("__", 2)[2]
-    return nome
-
-
-@router.post("/chat/stream")
-async def chat_stream(body: ChatRequest, request: Request):
-    """Variante streaming di /chat (SSE) per il client vocale (Tappa 6):
-    eventi `delta` (testo man mano che il modello genera), `tool_in_corso`
-    (alimenta i riempitivi vocali), `fine` (risposta completa + eventuale
-    azione in attesa di conferma), `errore` (messaggio pulito, mai traceback).
-    Stessa auth, stesso motore e stesso gate di /chat."""
-    sessione = await get_sessione_corrente(request)
-    tenant_id = sessione["tenant_id"]
-    # il ponte parte SUBITO, in parallelo al controllo azioni pendenti
-    # (~0,3s di Supabase): ogni decimo di secondo qui è silenzio in cuffia
-    task_ponte = asyncio.create_task(ponte.genera_ponte(body.messaggio))
+@router.websocket("/chat/stream")
+async def chat_stream_ws(websocket: WebSocket):
+    """Sessione vocale (Tappa 6, incr.4): il client manda ogni transcript
+    stabile (parziale/finale), il server puo' scommettere prima
+    dell'endpointing di Deepgram e interrompersi se l'utente continua a
+    parlare - vedi orchestratore/turno_vocale.py e design doc
+    docs/superpowers/specs/2026-07-19-speculativo-vocale-design.md."""
     try:
-        await _blocca_se_azione_pendente(tenant_id)
+        sessione = await get_sessione_corrente(websocket)
     except HTTPException:
-        task_ponte.cancel()
-        raise
+        await websocket.close(code=4401)
+        return
 
-    motore = await agente.motore_per(tenant_id)
+    await websocket.accept()
 
-    async def genera():
-        """Fonde due sorgenti: il turno dell'agente (in una coda alimentata da
-        un task) e il ponte vocale (Haiku puro, vedi ponte.py). Regola d'oro:
-        il ponte esce appena pronto SOLO se nessun testo del modello è ancora
-        uscito — mai due voci, mai un ponte superfluo."""
-        pezzi: list[str] = []
-        coda: asyncio.Queue = asyncio.Queue()
-
-        async def alimenta():
-            try:
-                async for m in motore.turno(body.messaggio, canale="voce"):
-                    await coda.put(("messaggio", m))
-                await coda.put(("fine_turno", None))
-            except Exception as exc:
-                await coda.put(("eccezione", exc))
-
-        task_turno = asyncio.create_task(alimenta())
-        testo_visto = False
-        ponte_risolto = False
+    async def ricevi() -> dict:
         try:
-            while True:
-                if not ponte_risolto and task_ponte.done():
-                    ponte_risolto = True
-                    # result() None = astensione (saluti/chiacchiere): la
-                    # risposta vera arriva da sola, il ponte tace
-                    if not testo_visto and task_ponte.exception() is None and task_ponte.result():
-                        yield _riga_sse("ponte", {"testo": task_ponte.result()})
-                try:
-                    tipo, contenuto = await asyncio.wait_for(coda.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    continue
-                if tipo == "eccezione":
-                    raise contenuto
-                if tipo == "fine_turno":
-                    break
-                message = contenuto
-                if isinstance(message, StreamEvent):
-                    evento = message.event
-                    tipo_evento = evento.get("type")
-                    if tipo_evento == "content_block_delta":
-                        delta = evento.get("delta") or {}
-                        if delta.get("type") == "text_delta" and delta.get("text"):
-                            if not testo_visto:
-                                testo_visto = True
-                                if not ponte_risolto:
-                                    ponte_risolto = True
-                                    task_ponte.cancel()
-                            yield _riga_sse("delta", {"testo": delta["text"]})
-                    elif tipo_evento == "content_block_start":
-                        blocco = evento.get("content_block") or {}
-                        if blocco.get("type") == "tool_use":
-                            yield _riga_sse(
-                                "tool_in_corso",
-                                {"tool": _nome_tool_pulito(blocco.get("name", ""))},
-                            )
-                elif isinstance(message, ResultMessage):
-                    if message.subtype == "success" and message.result:
-                        pezzi.append(message.result)
+            return await websocket.receive_json()
+        except WebSocketDisconnect:
+            raise turno_vocale.ConnessioneChiusa()
 
-            azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
-            yield _riga_sse(
-                "fine",
-                {"risposta": "\n".join(pezzi), "azione_in_attesa": azione_appena_creata},
-            )
-        except Exception:
-            # I retry (client morto, errori transitori a monte) vivono nel
-            # motore; qui arriva solo il fallimento definitivo. Mai traceback
-            # nel flusso ("ogni guasto ha una voce", spec Tappa 6) — ma il
-            # dettaglio vero va nel log, altrimenti è indiagnosticabile.
-            logger.exception("errore durante lo stream di /chat/stream")
-            yield _riga_sse(
-                "errore",
-                {"messaggio": "Non sono riuscito a elaborare la richiesta, riprova."},
-            )
-        finally:
-            task_ponte.cancel()
-            task_turno.cancel()
+    async def invia(evento: dict) -> None:
+        await websocket.send_json(evento)
 
-    return StreamingResponse(genera(), media_type="text/event-stream")
+    try:
+        await turno_vocale.gestisci_sessione_vocale(sessione["tenant_id"], ricevi, invia)
+    except turno_vocale.ConnessioneChiusa:
+        pass
 
 
 @router.post("/azioni/{azione_id}/conferma")
