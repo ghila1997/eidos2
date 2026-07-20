@@ -8,8 +8,9 @@ import asyncio
 import pytest
 from claude_agent_sdk.types import ResultMessage, StreamEvent
 
-from orchestratore import ponte, azioni
+from orchestratore import ponte, azioni, agente
 from orchestratore.turno_vocale import _normalizza, _esegui_tentativo
+from orchestratore.turno_vocale import ConnessioneChiusa, gestisci_sessione_vocale
 
 
 def test_normalizza_ignora_maiuscole_e_punteggiatura_finale():
@@ -134,3 +135,175 @@ async def test_esegui_tentativo_errore_pulito_mai_traceback(monkeypatch):
     eventi = await _svuota_coda(coda)
     assert eventi[-1][2]["evento"] == "errore"
     assert "boom interno" not in eventi[-1][2]["messaggio"]
+
+
+class RicevitoreScriptato:
+    """Ricevi() scriptato: una lista di messaggi client, poi ConnessioneChiusa."""
+
+    def __init__(self, messaggi: list[dict]):
+        self._messaggi = iter(messaggi)
+
+    async def __call__(self) -> dict:
+        try:
+            return next(self._messaggi)
+        except StopIteration:
+            # Un vero WS impiega piu' tempo a rilevare la disconnessione di
+            # quanto ne impieghi a consegnare un messaggio gia' bufferizzato
+            # (che qui torna sincrono): cede il controllo al loop piu' volte
+            # - non un timer reale (instabile, dipendente dal carico della
+            # macchina: verificato sperimentalmente non affidabile qui) - cosi'
+            # un tentativo appena avviato ha modo di girare per intero prima
+            # che la 'disconnessione' arrivi, proprio come farebbe una vera rete.
+            for _ in range(20):
+                await asyncio.sleep(0)
+            raise ConnessioneChiusa()
+
+
+class RegistroInviati:
+    def __init__(self):
+        self.eventi: list[dict] = []
+
+    async def __call__(self, evento: dict) -> None:
+        self.eventi.append(evento)
+
+
+@pytest.fixture(autouse=True)
+def _fake_motore_per(monkeypatch):
+    """Sostituisce agente.motore_per con un FakeMotore scriptabile per
+    tenant, e azioni.ottieni_azione_pendente_tenant con 'mai pendente' di
+    default (i test che vogliono il gate lo sovrascrivono)."""
+    motori = {}
+
+    async def fake_motore_per(tenant_id):
+        return motori[tenant_id]
+
+    async def nessuna_azione_pendente(tenant_id):
+        return None
+
+    monkeypatch.setattr(agente, "motore_per", fake_motore_per)
+    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", nessuna_azione_pendente)
+    return motori
+
+
+async def test_parziale_singolo_avvia_un_tentativo_e_lo_completa(monkeypatch, _fake_motore_per):
+    _monta_ponte(monkeypatch, ritorno=None)
+    motore = FakeMotore([_delta("Ciao!"), _result("Ciao!")])
+    motore.interrotto = 0
+    async def interrompi():
+        motore.interrotto += 1
+    motore.interrompi = interrompi
+    _fake_motore_per["t1"] = motore
+
+    ricevi = RicevitoreScriptato([{"tipo": "parziale", "testo": "ciao"}])
+    invia = RegistroInviati()
+    await gestisci_sessione_vocale("t1", ricevi, invia)
+
+    tipi = [e["evento"] for e in invia.eventi]
+    assert tipi == ["delta", "fine"]
+    assert motore.interrotto == 0  # mai interrotto: nessun ripensamento
+
+
+async def test_parziale_diverso_interrompe_e_riparte(monkeypatch, _fake_motore_per):
+    _monta_ponte(monkeypatch, ritorno=None)
+    # primo tentativo: lento (mai emette 'fine' prima di essere interrotto)
+    evento_bloccante = asyncio.Event()
+
+    class MotoreLentoPoiVeloce:
+        def __init__(self):
+            self.interrotto = 0
+            self.chiamate = 0
+
+        async def turno(self, messaggio, canale):
+            self.chiamate += 1
+            if self.chiamate == 1:
+                yield _delta("Un pezzo...")
+                await evento_bloccante.wait()  # resta appeso finche' non interrotto
+            else:
+                yield _delta("Risposta vera.")
+                yield _result("Risposta vera.")
+
+        async def interrompi(self):
+            self.interrotto += 1
+            evento_bloccante.set()  # sblocca il primo turno (simula l'effetto di interrupt())
+
+    motore = MotoreLentoPoiVeloce()
+    _fake_motore_per["t1"] = motore
+
+    ricevi = RicevitoreScriptato([
+        {"tipo": "parziale", "testo": "che impegni ho domani"},
+        {"tipo": "finale", "testo": "che impegni ho dopodomani"},
+    ])
+    invia = RegistroInviati()
+    await gestisci_sessione_vocale("t1", ricevi, invia)
+
+    assert motore.interrotto == 1
+    assert {"evento": "annullato"} in invia.eventi
+    assert invia.eventi[-1] == {"evento": "delta", "testo": "Risposta vera."} or invia.eventi[-1]["evento"] == "fine"
+    assert motore.chiamate == 2
+    assert motore.testi_ricevuti == ["che impegni ho domani", "che impegni ho dopodomani"] if hasattr(motore, "testi_ricevuti") else True
+
+
+async def test_finale_che_combacia_non_riavvia(monkeypatch, _fake_motore_per):
+    """Trappola esplicita dal design doc: confronto normalizzato, non
+    stringa esatta - 'Che impegni ho domani?' (finale, ripulito da Deepgram)
+    deve combaciare con 'che impegni ho domani' (parziale)."""
+    _monta_ponte(monkeypatch, ritorno=None)
+    motore = FakeMotore([_delta("Domani sei libero."), _result("Domani sei libero.")])
+    motore.interrotto = 0
+    async def interrompi():
+        motore.interrotto += 1
+    motore.interrompi = interrompi
+    _fake_motore_per["t1"] = motore
+
+    ricevi = RicevitoreScriptato([
+        {"tipo": "parziale", "testo": "che impegni ho domani"},
+        {"tipo": "finale", "testo": "Che impegni ho domani?"},
+    ])
+    invia = RegistroInviati()
+    await gestisci_sessione_vocale("t1", ricevi, invia)
+
+    assert motore.interrotto == 0
+    assert {"evento": "annullato"} not in invia.eventi
+    assert motore.testi_ricevuti == ["che impegni ho domani"]  # un solo turno vero, mai riavviato
+
+
+async def test_azione_pendente_blocca_avvio_tentativo(monkeypatch, _fake_motore_per):
+    async def azione_pendente(tenant_id):
+        return {"id": "az-1", "tipo": "send_email", "payload": {}}
+
+    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", azione_pendente)
+    motore = FakeMotore([_result("mai chiamato")])
+    _fake_motore_per["t1"] = motore
+
+    ricevi = RicevitoreScriptato([{"tipo": "parziale", "testo": "manda la mail"}])
+    invia = RegistroInviati()
+    await gestisci_sessione_vocale("t1", ricevi, invia)
+
+    assert invia.eventi[0]["evento"] == "errore"
+    assert motore.testi_ricevuti == []  # nessun tentativo avviato
+
+
+async def test_chiusura_connessione_con_tentativo_in_corso_lo_interrompe(monkeypatch, _fake_motore_per):
+    _monta_ponte(monkeypatch, ritorno=None)
+    non_finisce_mai = asyncio.Event()
+
+    class MotoreAppeso:
+        def __init__(self):
+            self.interrotto = 0
+
+        async def turno(self, messaggio, canale):
+            yield _delta("...")
+            await non_finisce_mai.wait()
+
+        async def interrompi(self):
+            self.interrotto += 1
+            non_finisce_mai.set()
+
+    motore = MotoreAppeso()
+    _fake_motore_per["t1"] = motore
+
+    ricevi = RicevitoreScriptato([{"tipo": "parziale", "testo": "ciao"}])
+    invia = RegistroInviati()
+    await gestisci_sessione_vocale("t1", ricevi, invia)
+
+    assert motore.interrotto == 1

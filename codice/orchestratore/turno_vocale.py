@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import Awaitable, Callable
 
 from claude_agent_sdk.types import ResultMessage, StreamEvent
 
-from . import azioni, ponte
+from . import agente, azioni, ponte
 
 logger = logging.getLogger(__name__)
 
@@ -93,3 +94,89 @@ async def _esegui_tentativo(
         await _emetti({"evento": "errore", "messaggio": "Non sono riuscito a elaborare la richiesta, riprova."})
     finally:
         task_ponte.cancel()
+
+
+class ConnessioneChiusa(Exception):
+    """Il client ha chiuso la connessione WebSocket."""
+
+
+async def _leggi_client(ricevi: Callable[[], Awaitable[dict]], coda: asyncio.Queue) -> None:
+    """Legge in loop i messaggi del client e li mette in coda, taggati.
+    Un task separato (mai lo stesso che consuma un tentativo): non tocca
+    mai il motore, solo la coda - nessun rischio di conflitto con
+    interrompi()."""
+    try:
+        while True:
+            messaggio = await ricevi()
+            await coda.put(("client", messaggio))
+    except ConnessioneChiusa:
+        await coda.put(("chiusura", None))
+
+
+async def gestisci_sessione_vocale(
+    tenant_id: str,
+    ricevi: Callable[[], Awaitable[dict]],
+    invia: Callable[[dict], Awaitable[None]],
+) -> None:
+    """Ciclo di vita di una sessione vocale WS: riceve parziale/finale dal
+    client, decide quando avviare/interrompere/lasciar proseguire un
+    tentativo di risposta, inoltra ponte/delta/tool_in_corso/fine/errore.
+
+    Un solo task consuma la coda e decide - mai due task toccano il motore
+    in contemporanea per lo STESSO tentativo (interrompi() e' l'eccezione
+    esplicita e verificata, vedi Task 1)."""
+    motore = await agente.motore_per(tenant_id)
+    coda: asyncio.Queue = asyncio.Queue()
+    task_lettore = asyncio.create_task(_leggi_client(ricevi, coda))
+    tentativo_id = 0
+    tentativo_testo: str | None = None
+    tentativo_in_corso = False
+
+    try:
+        while True:
+            tipo, *resto = await coda.get()
+
+            if tipo == "chiusura":
+                if tentativo_in_corso:
+                    await motore.interrompi()
+                return
+
+            if tipo == "client":
+                messaggio = resto[0]
+                nuovo_testo = messaggio["testo"]
+
+                if not tentativo_in_corso:
+                    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+                    if azione_pendente is not None:
+                        await invia({
+                            "evento": "errore",
+                            "messaggio": "C'e' un'azione in attesa di conferma, risolvila prima di continuare.",
+                        })
+                        continue
+                    tentativo_id += 1
+                    tentativo_testo = nuovo_testo
+                    tentativo_in_corso = True
+                    asyncio.create_task(
+                        _esegui_tentativo(motore, nuovo_testo, tentativo_id, coda, tenant_id)
+                    )
+                elif _normalizza(nuovo_testo) != _normalizza(tentativo_testo):
+                    await motore.interrompi()
+                    await invia({"evento": "annullato"})
+                    tentativo_id += 1
+                    tentativo_testo = nuovo_testo
+                    asyncio.create_task(
+                        _esegui_tentativo(motore, nuovo_testo, tentativo_id, coda, tenant_id)
+                    )
+                # else: combacia (confronto normalizzato) - nessuna azione,
+                # si aspetta che il tentativo in corso finisca da solo.
+                continue
+
+            if tipo == "tentativo":
+                id_evento, evento = resto
+                if id_evento != tentativo_id:
+                    continue  # eventi residui di un tentativo gia' scartato
+                await invia(evento)
+                if evento["evento"] in ("fine", "errore"):
+                    tentativo_in_corso = False
+    finally:
+        task_lettore.cancel()
