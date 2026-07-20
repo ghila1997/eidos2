@@ -77,6 +77,25 @@ async def voice_token(request: Request):
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+async def _ricevi_da_websocket(websocket: WebSocket) -> dict:
+    """Legge un messaggio JSON dal websocket, convertendo la disconnessione
+    del client in ConnessioneChiusa (vocabolario di turno_vocale, non di
+    FastAPI) - estratta da chat_stream_ws per essere testabile da sola."""
+    try:
+        return await websocket.receive_json()
+    except WebSocketDisconnect:
+        raise turno_vocale.ConnessioneChiusa()
+
+
+async def _invia_su_websocket(websocket: WebSocket, evento: dict) -> None:
+    """Specchio di _ricevi_da_websocket per l'invio - stessa conversione
+    di eccezione, stessa ragione per l'estrazione."""
+    try:
+        await websocket.send_json(evento)
+    except WebSocketDisconnect:
+        raise turno_vocale.ConnessioneChiusa()
+
+
 @router.websocket("/chat/stream")
 async def chat_stream_ws(websocket: WebSocket):
     """Sessione vocale (Tappa 6, incr.4): il client manda ogni transcript
@@ -92,20 +111,12 @@ async def chat_stream_ws(websocket: WebSocket):
 
     await websocket.accept()
 
-    async def ricevi() -> dict:
-        try:
-            return await websocket.receive_json()
-        except WebSocketDisconnect:
-            raise turno_vocale.ConnessioneChiusa()
-
-    async def invia(evento: dict) -> None:
-        try:
-            await websocket.send_json(evento)
-        except WebSocketDisconnect:
-            raise turno_vocale.ConnessioneChiusa()
-
     try:
-        await turno_vocale.gestisci_sessione_vocale(sessione["tenant_id"], ricevi, invia)
+        await turno_vocale.gestisci_sessione_vocale(
+            sessione["tenant_id"],
+            lambda: _ricevi_da_websocket(websocket),
+            lambda evento: _invia_su_websocket(websocket, evento),
+        )
     except turno_vocale.ConnessioneChiusa:
         pass
 

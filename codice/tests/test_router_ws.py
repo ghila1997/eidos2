@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import app
 from orchestratore import agente, azioni, ponte, turno_vocale
+from orchestratore.router import _invia_su_websocket, _ricevi_da_websocket
 
 TENANT = "540d61dc-175d-425b-b3a0-7ae1e01eec7f"
 
@@ -69,27 +70,33 @@ def test_ws_scambio_completo_con_sessione_valida(monkeypatch):
 
 
 def test_invia_gestisce_websocket_disconnect():
-    """Verifica che la closure invia() converta WebSocketDisconnect
-    in ConnessioneChiusa (così come ricevi() fa), evitando che
-    una disconnessione del client durante l'invio propaghi un'eccezione
-    non gestita."""
+    """Verifica che _invia_su_websocket (la funzione VERA usata da
+    chat_stream_ws, non una riscrittura) converta WebSocketDisconnect
+    in ConnessioneChiusa, evitando che una disconnessione del client
+    durante l'invio propaghi un'eccezione non gestita."""
 
     class FakeWebSocket:
         async def send_json(self, data):
             raise WebSocketDisconnect(code=1000)
 
-    async def test_invia_closure():
-        ws = FakeWebSocket()
-
-        # Ricrea la closure invia come nel codice reale (router.py, linea ~101)
-        async def invia(evento: dict) -> None:
-            try:
-                await ws.send_json(evento)
-            except WebSocketDisconnect:
-                raise turno_vocale.ConnessioneChiusa()
-
-        # Verifica che invia() converta WebSocketDisconnect in ConnessioneChiusa
+    async def prova():
         with pytest.raises(turno_vocale.ConnessioneChiusa):
-            await invia({"test": "data"})
+            await _invia_su_websocket(FakeWebSocket(), {"test": "data"})
 
-    asyncio.run(test_invia_closure())
+    asyncio.run(prova())
+
+
+def test_ricevi_gestisce_websocket_disconnect():
+    """Specchio del test sopra per _ricevi_da_websocket: stessa
+    conversione di eccezione, stessa funzione vera usata da
+    chat_stream_ws."""
+
+    class FakeWebSocket:
+        async def receive_json(self):
+            raise WebSocketDisconnect(code=1000)
+
+    async def prova():
+        with pytest.raises(turno_vocale.ConnessioneChiusa):
+            await _ricevi_da_websocket(FakeWebSocket())
+
+    asyncio.run(prova())
