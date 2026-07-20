@@ -246,6 +246,21 @@ class MotoreAgente:
                 pass
             self._client = None
 
+    async def interrompi(self) -> None:
+        """Interrompe il tentativo in corso su questo motore, se c'è.
+        Sicuro da chiamare in concorrenza mentre un altro task sta
+        consumando turno() sullo stesso motore (verificato con esperimento
+        reale 2026-07-19, vedi docs/superpowers/specs/2026-07-19-
+        speculativo-vocale-design.md, "Verifica preliminare")."""
+        if self._client is not None:
+            try:
+                await self._client.interrupt()
+            except Exception:
+                logger.warning(
+                    "interrompi() fallito, il tentativo in corso proseguira'",
+                    exc_info=True,
+                )
+
     async def turno(self, messaggio: str, canale: str) -> AsyncIterator[object]:
         """Esegue un turno e produce i messaggi SDK man mano che arrivano.
 
