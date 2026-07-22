@@ -168,11 +168,20 @@
   test reali su Supabase/Anthropic/Voyage veri (9/9 scenari PASS, incluso il filtro jsonb dei
   fatti collegati e il download via URL firmato con byte identici)
 
-## Tappa 6 — Voce
+## Tappa 6 — Voce — ✅ fatto (2026-07-22)
 
-- STT/TTS, progettati da zero (nessuna decisione ereditata da Eidos v1)
+- STT/TTS, progettati da zero (nessuna decisione ereditata da Eidos v1): Deepgram streaming +
+  ElevenLabs `stream-input` WS, `/chat/stream` su WebSocket persistente, ponte vocale (Haiku)
+  per coprire il silenzio iniziale
 - **Finito quando**: una conversazione vocale completa (domanda parlata → azione → risposta
-  parlata) funziona per il founder
+  parlata) funziona per il founder — ✅ verificato 2026-07-22 con voce vera (frase intera,
+  ripensamento a metà frase, frase corta), due bug reali di latenza trovati e corretti (token
+  Deepgram scaduto a metà sessione, handshake TTS sul percorso critico), speculativo vocale
+  costruito e disattivato dopo test reale (scattava su pause di respiro normali) — vedi
+  DECISIONS.md e [docs/voce/README.md](docs/voce/README.md). Latenza al primo token LLM
+  (Orchestratore) resta variabile e alta su alcuni turni, esplicitamente fuori perimetro di
+  questa tappa — non blocca il "finito quando" (la conversazione funziona), da riprendere se
+  serve in una sessione dedicata all'Orchestratore
 
 ## Tappa 7 — Interfaccia Utente
 
@@ -276,6 +285,14 @@ più "dimenticate silenziosamente"
 
 ## Esplicitamente rimandato
 
+- **Latenza al primo token LLM** (Tappa 6, Voce): 2,4-4,8s su turni semplici, oltre 10s con una
+  tool call reale — variabilità non eliminata da incr.3 (8-12s→2,5-6s). È latenza Orchestratore,
+  non di Voce; il `ponte` la maschera ma non la risolve. Da riprendere in una sessione dedicata
+  all'Orchestratore se resta un problema percepito, non prima — vedi DECISIONS.md 2026-07-22.
+- **Speculativo vocale** (Tappa 6, Voce): costruito completo in TDD, disattivato dopo STOP 2
+  reale (scattava su pause di respiro normali). Infrastruttura intatta, riattivabile con
+  un'euristica diversa (turn-taking dedicato invece di timer di stabilità fisso) — non prima
+  che serva davvero, vedi DECISIONS.md 2026-07-22.
 - Fatturazione a consumo/token (Stripe metered billing) — si rivaluta quando serve
   differenziare i piani per consumo reale
 - Sandboxing nativo del terminale — mitigazione attuale resta la conferma obbligatoria

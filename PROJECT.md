@@ -1,7 +1,7 @@
 # Eidos 2.0
 
 > Indice del progetto. Descrive lo stato attuale del sistema — non i piani.
-> Ultimo allineamento: 2026-07-16
+> Ultimo allineamento: 2026-07-22
 
 ## Cos'è
 
@@ -37,7 +37,7 @@ sottile ma vero end-to-end, si ispessisce un pezzo alla volta (dettagli in ROADM
 | Memoria | Un solo database Postgres con tre modi di ricordare: poche righe sempre caricate (preferenze minime), tabelle strutturate per fatti per entità (upsert, scrittura sempre esplicita via `remember_fact` o via estrazione automatica da un documento importato), ricerca semantica (pgvector) unificata su mail importate + eventi calendario conclusi + fatti salvati + documenti importati (`search_memoria`). Estensione documenti (Tappa 5): ingest esplicito di PDF/DOCX/XLSX/immagini (allegato Gmail, file Drive, file locale) via `import_document` — dedup per hash, archiviazione originale (Supabase Storage), estrazione strutturata verso `memoria_fatti`. Ciclo di vita completo (Tappa 5.1): `list_documents`, `get_document` (link firmato all'originale), `forget_document` (con conferma; rimuove ricerca+archivio+fatti); ingest atomico (colonna `stato`), immagini HEIC/TIFF/oversize normalizzate, PDF misti/cifrati gestiti | costruito (v1, mail+calendario+fatti+documenti con ciclo di vita) | [docs/orchestratore/README.md](docs/orchestratore/README.md) |
 | Connettori Cloud | Suite Google completa: Google Calendar + Google Drive (vedi riga Orchestratore); messaggistica, ricerca web non ancora coperti; Suite Microsoft (Outlook Mail/Calendar, OneDrive) dopo validazione della Suite Google | in parte pianificato | — |
 | Agente Locale | File/cartelle: leggere/scrivere/cercare/spostare/eliminare dentro un perimetro autorizzato, sessione locale separata dall'Orchestratore server-side. Terminale/browser: non ancora costruiti | costruito (v1, solo file) | [docs/agente_locale/README.md](docs/agente_locale/README.md) |
-| Voce | STT/TTS (da riprogettare da zero, nessuna decisione ereditata) | pianificato | — |
+| Voce | STT/TTS streaming (Deepgram+ElevenLabs), `/chat/stream` su WebSocket persistente, ponte vocale (Haiku) per coprire il silenzio iniziale. Client CLI push-to-talk, non ancora interfaccia grafica (Tappa 7). Speculativo vocale costruito e disattivato dopo test reale (infrastruttura intatta) | costruito (v1, CLI) | [docs/voce/README.md](docs/voce/README.md) |
 | Interfaccia Utente | Riceve voce/testo, mostra risposte, log azioni, conferme | pianificato | — |
 | Consumi | Traccia uso per tenant, applica soglia/avvisi del piano in abbonamento | pianificato | — |
 | Automazioni | Automazioni create dall'utente (schedulate o su trigger di eventi): scheduler, ricezione webhook/polling sui Connettori Cloud, storage delle definizioni per tenant, esecuzione tramite invocazione dell'Orchestratore | pianificato | — |

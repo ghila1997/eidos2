@@ -1083,3 +1083,85 @@ a fondamenta fatte, si aggiungono al primo bisogno reale); normalizzazione delle
 sociali in `_slug_entity` ("Rossi Srl" vs "ROSSI S.R.L." creano fatti separati — problema
 pre-esistente di remember_fact, si affronta con un caso reale); ciclo di vita documenti
 dall'Agente Locale (si gestisce dalla chat dell'Orchestratore, stesso DB).
+
+## 2026-07-22 — Tappa 6 (Voce): STT/TTS da zero, ponte vocale, speculativo tentato e ritirato
+
+**Contesto**: modulo Voce costruito in 4 incrementi (commit `343c219`..`0884a64`, dettaglio
+implementativo nei messaggi di commit — qui solo le decisioni, non il changelog). Nessuna voce
+DECISIONS.md esisteva ancora per questo modulo: la si scrive ora, chiudendo Tappa 6, invece che
+un pezzo alla volta a ogni incremento — scelta pragmatica (gli incrementi erano ravvicinati,
+2026-07-19/22), non un precedente per i moduli futuri.
+
+**Incr.1-2 (fondamenta)**: `/chat/stream` (SSE) e `/voice/token` (token effimeri Deepgram
+grant-JWT 30s + ElevenLabs single-use 15min — le key permanenti restano solo nell'env server).
+Client push-to-talk (`codice/voce/`) con STT/TTS streaming veri (Deepgram interim results,
+ElevenLabs WS `stream-input`), non clip interi. `ClaudeSDKClient` persistente per tenant al
+posto di un `query()` per turno (~6,4s di sottoprocesso risparmiati), niente resume di sessioni
+vecchie (storico lungo rallentava ogni turno e costava token per sempre). Latenza primo evento
+misurata 8,5s → ~2,2s a regime.
+
+**Incr.3 (ponte + sei bug di latenza)**: `orchestratore/ponte.py` — frase di presa in carico
+generata da Haiku puro in parallelo al turno di Sonnet, si astiene (`NO_PONTE`) su chiacchiera
+pura, eval `eval_ponte.py` 9/9 PASS reali. Sei bug di latenza server-side trovati e corretti
+testando a voce dal vivo (non dai test automatici): tools nativi esposti per errore
+(`tools=None` invece di `tools=[]`), config personale dell'host caricata nell'agente prodotto
+(`setting_sources`), cache mancante su token OAuth/client HTTP riusati a ogni tool call,
+`thinking` non adattivo pagato anche sui saluti. Latenza primo evento: 8-12s → 2,5-6s a seconda
+del turno — **variabilità reale, non ancora eliminata** (vedi sotto).
+
+**Incr.4 — speculativo vocale: costruito con TDD completo (10 task, review a ogni step,
+`.superpowers/sdd/`), poi disattivato allo STOP 2 reale (2026-07-22).** Idea: mandare al server
+un transcript "parziale" appena l'euristica `RilevatoreFrase` lo giudica stabile (soglia
+0,35s), lasciando che il server inizi a generare prima ancora che Deepgram segnali la fine
+frase — interrupt sicuro verificato con un esperimento reale isolato prima di scrivere codice
+(regola CLAUDE.md sulle capacità nuove, applicata anche a un pattern SDK non solo a un tool).
+**Trovato a STOP 2 con voce vera**: l'euristica scattava anche su normali pause di respiro a
+metà frase, non solo su frasi davvero complete — un tentativo veniva avviato e poi annullato
+("tentativo annullato, riparto") con una cadenza percepita come innaturale dall'utente.
+**Decisione**: disattivato lato client (`voce/client.py` non chiama più `manda_parziale`),
+infrastruttura lasciata intatta (`rilevatore_frase.py`, `SessioneVoce.manda_parziale`,
+l'interrupt server-side in `turno_vocale.py`) per una riattivazione futura con un'euristica
+diversa (es. modello di turn-taking dedicato invece di un timer di stabilità — nota già in
+ROADMAP.md Tappa 7, "il pezzo mancante è il turn-taking intelligente, non timer fisso") — non
+rimosso perché il costo di ricostruirlo da zero sarebbe alto e il design resta valido, cambia
+solo il trigger. **Alternativa scartata esplicitamente**: ritarare solo la soglia (0,35s → più
+alta) invece di disattivare — scartata perché il problema non era il valore della soglia ma il
+fatto che *qualunque* timer fisso scatta anche su pause naturali, lo stesso limite concettuale
+già annotato per l'endpointing Deepgram.
+
+**Due bug reali trovati chiudendo lo STOP 2 di Incr.4, entrambi con voce vera**:
+- **Token Deepgram scaduto a metà sessione**: preso una volta sola all'avvio del loop
+  (`_loop`), ma dura 30s — dopo un paio di turni la connessione Deepgram del turno successivo
+  falliva a metà frase. Fix: ripreso a ogni turno (`_token_deepgram_fresco`), appena prima di
+  ascoltare, mai prima.
+- **Handshake TTS sul percorso critico**: `assicura_tts` apriva token+WS ElevenLabs da zero
+  SOLO al primo bisogno reale (dentro il turno), in serie con tutto il resto — confermato con
+  un timestamp indipendente (`handshake_tts_reale`, misura il completamento vero
+  dell'handshake, non il momento in cui viene consumato): 1,7-2,7s pieni, mai sovrapposti a
+  niente. Fix: prefetch — l'apertura parte come task in background appena inizia il turno (in
+  parallelo con l'attesa dei primi eventi dal server), non più al primo bisogno. Verificato con
+  voce vera: l'handshake ora finisce sempre prima che serva, sparisce dal tempo percepito.
+  **Alternativa scartata esplicitamente**: tenere la stessa connessione WS ElevenLabs viva tra
+  un turno e l'altro (zero handshake, non solo sovrapposto) — tecnicamente possibile
+  (`TTS_INACTIVITY_TIMEOUT=180s` lo permetterebbe), ma richiede ridisegnare il contratto di
+  `SessioneTTS`/`Casse` (oggi "fine turno" = chiusura WS = unico segnale di "audio finito di
+  suonare"; senza chiusura serve un segnale diverso). Scartata qui perché il prefetch da solo
+  ha già reso l'handshake invisibile nei test reali (si nasconde dentro l'attesa del primo
+  token LLM, molto più lunga) — costruire il pezzo in più senza un problema misurato che lo
+  giustifichi sarebbe il tipo di over-engineering che CLAUDE.md vieta. Da riconsiderare se e
+  quando la latenza LLM scende sotto quella dell'handshake TTS.
+
+**Trovato ma esplicitamente fuori perimetro di Voce**: la latenza al primo token LLM
+(`risposta` nei log diagnostici) resta il fattore dominante e variabile — 2,4-4,8s su turni
+semplici, 10,9s su un turno con tool call reale (Calendar). È latenza Orchestratore (Tappa 2,
+già "fatta"), non Voce: incr.3 l'aveva già ridotta (8-12s→2,5-6s) ma non eliminata. Il `ponte`
+la maschera bene quando scatta (l'utente sente il filler, non aspetta la risposta vera) ma non
+la risolve. Non affrontato in questa sessione (decisione esplicita dell'utente: chiudere Voce
+ora, non inseguire una latenza fuori modulo) — da riprendere in una sessione dedicata
+all'Orchestratore se la latenza percepita resta un problema.
+
+**Finito quando** (ROADMAP.md Tappa 6): conversazione vocale completa (domanda parlata →
+azione → risposta parlata) verificata end-to-end con voce vera, inclusi i tre casi critici
+dello STOP 2 finale — frase intera senza pause, ripensamento a metà frase (nessun accenno alla
+risposta sbagliata, ora garantito per costruzione: speculativo disattivato, nessun tentativo da
+annullare), frase corta senza pause.
