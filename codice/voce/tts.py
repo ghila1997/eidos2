@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from urllib.parse import urlencode
 
 import websockets
@@ -27,6 +28,9 @@ class SessioneTTS:
         self._ws = ws
         self.casse = casse
         self._task = task_ricezione
+        # diagnostica STOP 2 (Tappa 6 incr.4): momento del primo byte audio
+        # vero ricevuto da ElevenLabs - None finche' non arriva nulla
+        self.primo_audio_monotonic: float | None = None
 
     async def invia(self, frase: str) -> None:
         # flush: genera subito la frase senza aspettare altro testo
@@ -81,16 +85,20 @@ async def apri_sessione(token: str) -> SessioneTTS:
 
     casse = Casse()
     casse.avvia()
+    sessione = SessioneTTS(ws, casse, None)  # _task assegnato sotto
 
     async def ricevi():
         try:
             async for messaggio in ws:
                 dati = json.loads(messaggio)
                 if dati.get("audio"):
+                    if sessione.primo_audio_monotonic is None:
+                        sessione.primo_audio_monotonic = time.monotonic()
                     casse.accoda(base64.b64decode(dati["audio"]))
                 if dati.get("isFinal"):
                     return
         except (websockets.WebSocketException, OSError):
             return  # audio interrotto: gestito da chiudi()
 
-    return SessioneTTS(ws, casse, asyncio.create_task(ricevi()))
+    sessione._task = asyncio.create_task(ricevi())
+    return sessione

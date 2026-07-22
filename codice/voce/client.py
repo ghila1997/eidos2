@@ -1,15 +1,15 @@
-"""Client vocale push-to-talk con generazione speculativa (Tappa 6,
-incr.4).
+"""Client vocale push-to-talk (Tappa 6).
 
-Premi Invio, parla: appena il transcript resta stabile (RilevatoreFrase),
-si manda un 'parziale' al server - che puo' gia' iniziare a generare prima
-ancora che Deepgram segnali la fine della frase (endpointing 300ms). Se
-continui a parlare, il server interrompe da solo il tentativo sbagliato
-(evento 'annullato') e il client smette di pronunciarlo, in silenzio.
-
-Il backend resta l'unico motore agentico; qui c'e' solo I/O audio e la
-decisione locale di QUANDO mandare un parziale (design doc:
+Premi Invio, parla: si manda il transcript finale al server via WebSocket
+persistente (protocollo di /chat/stream, design doc:
 docs/superpowers/specs/2026-07-19-speculativo-vocale-design.md).
+
+Speculativo (scommettere su un transcript parziale prima della fine della
+frase) DISATTIVATO su richiesta dell'utente (STOP 2, 2026-07-22): scattava
+anche su normali pause di respiro a meta' frase, sentito come innaturale.
+L'infrastruttura resta pronta (voce/rilevatore_frase.py, SessioneVoce.
+manda_parziale, l'interrupt sicuro server-side in turno_vocale.py) - non
+rimossa, solo non collegata qui. Vedi DECISIONS.md per la decisione.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from . import config, stt, tts
 from .audio import ErroreAudio, Microfono
 from .conferme import interpreta_transcript
 from .frasi import SpezzaFrasi
-from .rilevatore_frase import RilevatoreFrase
 from .sanificazione import per_tts
 from .sessione_ws import ErroreSessioneVoce, SessioneVoce
 
@@ -55,28 +54,51 @@ async def _token_voce(client: httpx.AsyncClient) -> dict:
     return resp.json()
 
 
-async def _ascolta_e_specula(
-    sessione: SessioneVoce, token_deepgram: str
-) -> str:
-    """Ascolta il microfono; ogni volta che il transcript resta stabile
-    (RilevatoreFrase) manda un 'parziale' al server - non aspetta piu' solo
-    il transcript finale per iniziare a informare il server. Ritorna il
-    transcript finale (per la stampa a schermo/gestione conferme)."""
+async def _ascolta(sessione: SessioneVoce, token_deepgram: str) -> str:
+    """Ascolta il microfono e ritorna il transcript finale.
+
+    Speculativo disattivato su richiesta dell'utente (STOP 2, 2026-07-22):
+    la scommessa su un parziale 'stabile' scattava anche su normali pause
+    di respiro a meta' frase, con un tentativo poi scartato (annullato) -
+    l'infrastruttura per lo speculativo (RilevatoreFrase, manda_parziale,
+    l'interrupt sicuro server-side) resta intatta e pronta, semplicemente
+    non e' piu' collegata qui: si manda solo il transcript finale, come
+    prima di questo incremento."""
     microfono = Microfono()
-    rilevatore = RilevatoreFrase()
     print("… parla pure (mi fermo quando fai una pausa)")
+    ultimo_interim_a = time.monotonic()
 
     def su_interim(testo: str) -> None:
+        nonlocal ultimo_interim_a
+        ultimo_interim_a = time.monotonic()
         print(f"\r  {testo}", end="", flush=True)
-        candidato = rilevatore.aggiorna(testo, time.monotonic())
-        if candidato:
-            asyncio.ensure_future(sessione.manda_parziale(candidato))
 
     transcript = await stt.trascrivi_turno(token_deepgram, microfono, su_interim)
-    print()
+    # diagnostica STOP 2: quanto ci mette Deepgram a chiudere la frase dopo
+    # l'ultimo aggiornamento della trascrizione live (endpointing atteso
+    # ~0.3s - se questo numero e' alto, il ritardo e' qui, non nel motore)
+    print(f"\n(chiusura trascrizione: {time.monotonic() - ultimo_interim_a:.1f}s)")
     if transcript:
         await sessione.manda_finale(transcript)
     return transcript
+
+
+async def _apri_tts(client: httpx.AsyncClient) -> tts.SessioneTTS:
+    tokens = await _token_voce(client)
+    return await tts.apri_sessione(tokens["elevenlabs"]["token"])
+
+
+async def _apri_tts_misurato(
+    client: httpx.AsyncClient, t0: float, tempi: dict[str, float]
+) -> tts.SessioneTTS:
+    """Come _apri_tts, ma registra SUBITO quando l'handshake finisce
+    davvero, non quando qualcuno lo richiede. Senza questo, 'tts_pronto'
+    (registrato in assicura_tts) misura anche l'attesa della prima frase
+    completa dell'LLM se l'handshake finisce prima - numero fuorviante,
+    trovato a STOP 2 (2026-07-22) confrontando 'risposta' e 'tts_pronto'."""
+    sessione = await _apri_tts(client)
+    tempi.setdefault("handshake_tts_reale", time.monotonic() - t0)
+    return sessione
 
 
 async def _pronuncia_eventi_turno(sessione: SessioneVoce) -> dict | None:
@@ -86,57 +108,75 @@ async def _pronuncia_eventi_turno(sessione: SessioneVoce) -> dict | None:
     spezza = SpezzaFrasi()
     sessione_tts: tts.SessioneTTS | None = None
     azione: dict | None = None
-
-    async def assicura_tts(client: httpx.AsyncClient) -> tts.SessioneTTS:
-        nonlocal sessione_tts
-        if sessione_tts is None:
-            tokens = await _token_voce(client)
-            sessione_tts = await tts.apri_sessione(tokens["elevenlabs"]["token"])
-        return sessione_tts
+    t0 = time.monotonic()  # fine del parlato: base del cronometro per turno
+    tempi: dict[str, float] = {}
 
     try:
         async with httpx.AsyncClient(
             base_url=config.BASE_URL, cookies=_carica_cookie(), timeout=180.0
         ) as client_http:
+            # prefetch: token+WS ElevenLabs partono subito, in parallelo con
+            # l'attesa dei primi eventi dal server, invece di aprirli solo al
+            # primo bisogno. Diagnosi reale STOP 2 (2026-07-22): 'tts_pronto'
+            # era quasi tutto il tempo del turno (handshake mai sovrapposto a
+            # nient'altro) - il token resta comunque preso qui, non prima
+            # (single-use, stessa ragione del fix sul token Deepgram sopra)
+            tentativo_tts = asyncio.create_task(_apri_tts_misurato(client_http, t0, tempi))
+
+            async def assicura_tts() -> tts.SessioneTTS:
+                nonlocal sessione_tts
+                if sessione_tts is None:
+                    sessione_tts = await tentativo_tts
+                    tempi.setdefault("tts_pronto", time.monotonic() - t0)
+                return sessione_tts
+
             async for evento in sessione.eventi():
                 tipo = evento["evento"]
                 if tipo == "annullato":
                     if sessione_tts is not None:
                         await sessione_tts.chiudi()
                         sessione_tts = None
+                    else:
+                        tentativo_tts.cancel()
                     spezza = SpezzaFrasi()
+                    tempi.clear()  # il cronometro riparte col tentativo vero
+                    tentativo_tts = asyncio.create_task(
+                        _apri_tts_misurato(client_http, t0, tempi)
+                    )
                     print("\n(tentativo annullato, riparto)", flush=True)
                     continue
                 if tipo == "ponte":
+                    tempi["ponte"] = time.monotonic() - t0
                     print(f"(ponte: {evento['testo']})", flush=True)
-                    ses = await assicura_tts(client_http)
+                    ses = await assicura_tts()
                     await ses.invia(per_tts(evento["testo"]))
                     continue
                 if tipo == "tool_in_corso":
                     print(f"\n[{evento['tool']}…]", flush=True)
                     continue
                 if tipo == "delta":
+                    tempi.setdefault("risposta", time.monotonic() - t0)
                     print(evento["testo"], end="", flush=True)
                     for frase in spezza.aggiungi(evento["testo"]):
-                        ses = await assicura_tts(client_http)
+                        ses = await assicura_tts()
                         await ses.invia(per_tts(frase))
                     continue
                 if tipo == "errore":
                     for frase in spezza.chiudi():
-                        ses = await assicura_tts(client_http)
+                        ses = await assicura_tts()
                         await ses.invia(per_tts(frase))
                     print(f"\n{evento['messaggio']}")
-                    ses = await assicura_tts(client_http)
+                    ses = await assicura_tts()
                     await ses.invia(per_tts(evento["messaggio"]))
                     break
                 if tipo == "fine":
                     for frase in spezza.chiudi():
-                        ses = await assicura_tts(client_http)
+                        ses = await assicura_tts()
                         await ses.invia(per_tts(frase))
                     azione = evento.get("azione_in_attesa")
                     if azione:
                         print(f"\n\n[Conferma richiesta] {_descrivi_azione(azione)}")
-                        ses = await assicura_tts(client_http)
+                        ses = await assicura_tts()
                         await ses.invia(per_tts(
                             f"Serve la tua conferma: {_descrivi_azione(azione)}. "
                             "Premi Invio e rispondi con un si' o con un no."
@@ -149,8 +189,23 @@ async def _pronuncia_eventi_turno(sessione: SessioneVoce) -> dict | None:
         # sessione TTS aperta e il thread delle casse bloccato in attesa
         # (Casse.chiudi_e_attendi non viene mai chiamato) - stessa garanzia
         # che il vecchio client.py dava con un try/finally attorno al turno.
+        if sessione_tts is None:
+            # il prefetch puo' essere finito senza che nessuno l'abbia mai
+            # atteso (turno senza testo da pronunciare) - va comunque
+            # recuperato e chiuso, altrimenti la connessione WS aperta resta
+            # a perdere insieme al thread delle casse
+            tentativo_tts.cancel()
+            try:
+                sessione_tts = await tentativo_tts
+            except (asyncio.CancelledError, tts.ErroreTTS, RuntimeError):
+                sessione_tts = None
         if sessione_tts is not None:
             await sessione_tts.chiudi()
+            if sessione_tts.primo_audio_monotonic is not None:
+                tempi["primo_audio"] = sessione_tts.primo_audio_monotonic - t0
+    pezzi_tempo = [f"{nome} {secondi:.1f}s" for nome, secondi in tempi.items()]
+    pezzi_tempo.append(f"totale {time.monotonic() - t0:.1f}s")
+    print(f"(tempi: {' · '.join(pezzi_tempo)})")
     return azione
 
 
@@ -192,18 +247,29 @@ async def _pronuncia_singola(client: httpx.AsyncClient, testo: str) -> None:
         pass
 
 
+async def _token_deepgram_fresco() -> str:
+    """Il token Deepgram dura solo 30s (grant JWT, vedi voce_token.py) - va
+    ripreso a ogni turno, non una volta sola all'avvio della sessione.
+    Trovato in reale (STOP 2, 2026-07-20): dopo un paio di turni il token
+    preso all'avvio era gia' scaduto, la connessione Deepgram del turno
+    successivo falliva a meta' frase con un errore di connessione."""
+    async with httpx.AsyncClient(
+        base_url=config.BASE_URL, cookies=_carica_cookie(), timeout=60.0
+    ) as client:
+        tokens = await _token_voce(client)
+    return tokens["deepgram"]["token"]
+
+
 async def _loop(cookie: str) -> None:
     sessione = await SessioneVoce.connetti(cookie)
-    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
-        tokens = await _token_voce(client)
-    token_deepgram = tokens["deepgram"]["token"]
 
     print("Eidos voce — premi Invio e parla (Ctrl+C per uscire)\n")
     azione_in_attesa: dict | None = None
     while True:
         try:
             await asyncio.to_thread(input, "[Invio per parlare] ")
-            transcript = await _ascolta_e_specula(sessione, token_deepgram)
+            token_deepgram = await _token_deepgram_fresco()
+            transcript = await _ascolta(sessione, token_deepgram)
             if not transcript:
                 print("Non ho sentito nulla, riprova.")
                 continue
