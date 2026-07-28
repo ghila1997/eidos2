@@ -5,6 +5,7 @@ entity_key), ricerca semantica su documenti (pgvector via RPC match_chunks).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -375,6 +376,94 @@ async def set_import_cursore(tenant_id: str, source_type: str, cursore: str) -> 
             },
         )
     resp.raise_for_status()
+
+
+async def upsert_impegno(
+    tenant_id: str,
+    entity_key: str,
+    descrizione: str,
+    direzione: str,
+    source_type: str,
+    source_id: str,
+    source_excerpt: str,
+    observed_at: str,
+    scadenza: str | None,
+    confidence: float,
+) -> str:
+    """Scrive un impegno confermato (mai chiamata prima della conferma
+    esplicita dell'utente - vedi orchestratore/azioni.py:_esegui_propose_commitment).
+    Sempre stato iniziale 'aperto': la chiusura passa da chiudi_impegno."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{url}/rest/v1/memoria_impegni",
+            headers={**rest_headers(key), "Prefer": "return=representation"},
+            json={
+                "tenant_id": tenant_id,
+                "entity_key": entity_key,
+                "descrizione": descrizione,
+                "direzione": direzione,
+                "source_type": source_type,
+                "source_id": source_id,
+                "source_excerpt": source_excerpt,
+                "observed_at": observed_at,
+                "scadenza": scadenza,
+                "stato": "aperto",
+                "confidence": confidence,
+            },
+        )
+    resp.raise_for_status()
+    return resp.json()[0]["id"]
+
+
+async def get_impegni_aperti(tenant_id: str) -> list[dict]:
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_impegni",
+            params={
+                "tenant_id": f"eq.{tenant_id}",
+                "stato": "eq.aperto",
+                "order": "scadenza.asc.nullslast,observed_at.asc",
+            },
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def chiudi_impegno(tenant_id: str, impegno_id: str) -> None:
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{url}/rest/v1/memoria_impegni",
+            params={"tenant_id": f"eq.{tenant_id}", "id": f"eq.{impegno_id}"},
+            headers=rest_headers(key),
+            json={"stato": "chiuso", "chiuso_il": datetime.now(timezone.utc).isoformat()},
+        )
+    resp.raise_for_status()
+
+
+async def trova_impegno_simile(
+    tenant_id: str, entity_key: str, source_type: str, source_id: str
+) -> dict | None:
+    """Base per la deduplica: stessa fonte (es. stessa mail) riproposta due
+    volte per la stessa entità non deve creare un impegno duplicato."""
+    url, key = supabase_settings()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{url}/rest/v1/memoria_impegni",
+            params={
+                "tenant_id": f"eq.{tenant_id}",
+                "entity_key": f"eq.{entity_key}",
+                "source_type": f"eq.{source_type}",
+                "source_id": f"eq.{source_id}",
+            },
+            headers=rest_headers(key),
+        )
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else None
 
 
 async def get_sessione_agent(tenant_id: str) -> str | None:

@@ -18,7 +18,12 @@ locale via Agente Locale) — dedup cross-origine per hash, archiviazione del fi
 controparte chiara. Ciclo di vita completo (Tappa 5.1): elencare i documenti importati
 (`list_documents`), rivederli con link firmato temporaneo all'originale (`get_document`),
 dimenticarli (`forget_document`, distruttivo → azione pending; rimuove ricerca, archivio e voce
-nei fatti collegati). Le immagini fuori standard API (HEIC da iPhone, TIFF da scanner, foto
+nei fatti collegati). Impegni impliciti (sessione 2026-07-28, primo cuneo di differenziazione
+del prodotto, vedi DECISIONS.md): promesse prese via mail/documento che non vivono in nessun
+calendario/todo-list — proposte dal modello (`propose_commitment`, sempre azione pending, mai
+scrittura diretta), lette con `list_impegni_aperti`, chiuse esplicitamente (`close_commitment`)
+o **rilevate automaticamente** quando una mail/documento nuovo in ingresso le risolve (Haiku
+economico, zero costo se non ci sono impegni aperti). Le immagini fuori standard API (HEIC da iPhone, TIFF da scanner, foto
 oltre i limiti) vengono normalizzate localmente prima della visione — l'originale archiviato
 resta intatto. NON fa: subagent paralleli (nessun bisogno di delega ancora), sync/import
 automatico (on-demand, l'automatico è Tappa 10), UI oltre CLI (Tappa 7), gestione account
@@ -65,7 +70,10 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
     vedi sotto; per Gmail il `source_id` è `message_id:filename`, MAI l'`attachment_id` che
     cambia a ogni fetch), `list_documents`/`get_document` (Tappa 5.1, immediati — elenco e
     dettagli con link firmato all'originale), `forget_document` (Tappa 5.1, distruttivo —
-    crea un'azione pending come le altre cancellazioni)
+    crea un'azione pending come le altre cancellazioni), `propose_commitment`/
+    `close_commitment` (impegni impliciti, sessione 2026-07-28 — categoria Supervisor dedicata
+    `proposta`, sempre azione pending), `list_impegni_aperti` (immediato — lettura con anzianità
+    in giorni, guard minimo di freschezza)
   - Calendario: `search_events` (live, passato+futuro, tutti i calendari), `check_availability`,
     `respond_to_invite` (immediati), `create_event`/`update_event`/`delete_event` (gate
     condizionale: con partecipanti → azione pending, senza → immediato; `create_event` con `fine`
@@ -82,7 +90,20 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
 - `codice/orchestratore/azioni.py` — azioni distruttive in attesa di conferma umana esplicita,
   dispatch per tipo (`_ESECUTORI`): mail (`send_email`/`reply_email`/`forward_email`/
   `send_draft`/`trash_email`) + calendario (`create_event`/`update_event`/`delete_event`) +
-  Drive (`share_file`/`trash_file`) + memoria (`forget_document`, Tappa 5.1)
+  Drive (`share_file`/`trash_file`) + memoria (`forget_document`, Tappa 5.1;
+  `propose_commitment`/`close_commitment`, impegni impliciti — dedup su entità+fonte prima di
+  scrivere, mai un secondo impegno per la stessa mail riproposta)
+- `codice/memoria/entity_resolution.py` — risoluzione entità condivisa (slug + normalizzazione
+  suffissi societari: S.p.A./Srl/ecc. — "Isagro" e "ISAGRO S.p.A." risolvono alla stessa
+  entità), consolidata da due copie private identiche in `tools.py`/`ingest_documento.py`
+  perché `azioni.py` deve poterla chiamare senza creare un ciclo con `tools.py` (che importa
+  già `azioni`)
+- `codice/orchestratore/chiusura_impegni.py` — chiusura automatica di impegni aperti: singola
+  chiamata Haiku che valuta un testo (mail/documento) contro tutti gli impegni aperti del
+  tenant insieme (mai un pre-filtro per mittente/entità — quella risoluzione deterministica è
+  il problema difficile della vera entity-resolution cross-source), id verificato contro la
+  lista offerta prima di fidarsene (difesa da allucinazione), testo letto marcato
+  `<testo_non_fidato>` (stessa difesa da prompt injection di `classification.py`)
 - `codice/orchestratore/gmail_client.py` — client Gmail completo (httpx puro)
 - `codice/orchestratore/calendar_client.py` — client Google Calendar completo (httpx puro):
   cerca (tutti i calendari), crea/modifica/cancella, rispondi a invito (tocca solo il proprio
@@ -100,7 +121,9 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
   prima dell'ingest
 - `codice/orchestratore/embeddings.py` — embedding (Voyage AI, `voyage-3`)
 - `codice/orchestratore/import_mail.py` — pipeline ingest mail: fetch → dedup → classifica →
-  chunk+embedding+salva
+  chunk+embedding+salva → (se il tenant ha impegni aperti) valuta chiusura automatica e propone
+  `close_commitment` — impegni aperti letti una volta per batch, non per mail (controllo
+  economico; nel peggiore caso una chiusura proposta due volte, conferma duplicata innocua)
 - `codice/orchestratore/import_calendar.py` — pipeline ingest eventi **conclusi** (`fine < adesso`)
   su tutti i calendari: sync incrementale (`syncToken`) → filtra conclusi → dedup →
   chunk+embedding+salva. Eventi futuri restano fuori, gestiti live da `search_events`
@@ -133,7 +156,10 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
   con chiarezza (voce sostituita per `documento_id`, mai accumulata). Atomicità (Tappa 5.1):
   insert con `stato='in_corso'`, `completo` solo a fine pipeline — un ingest interrotto a metà
   non maschera mai il retry come "già presente"; errori API/trascrizione incapsulati in
-  `ErroreIngestDocumento` (messaggio pulito, mai traceback al modello)
+  `ErroreIngestDocumento` (messaggio pulito, mai traceback al modello). Stessa chiusura
+  automatica di impegni della mail (import locale di `azioni` dentro la funzione, non a livello
+  di modulo: import a livello modulo qui creerebbe un ciclo, perché `gestione_documenti.py`
+  importa già `FONTI` da questo file)
 - `codice/memoria/gestione_documenti.py` (Tappa 5.1) — ciclo di vita: elenca, descrivi (link
   firmato 1h), dimentica (riga + chunk via FK cascade + file Storage + voce nei fatti collegati
   trovata con filtro jsonb `cs`, con re-indicizzazione del fatto)
@@ -141,6 +167,9 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
   un fatto, condivisa tra ingest e gestione documenti
 - `codice/memoria/eval/eval_estrazione.py` (Tappa 5.1) — eval del comportamento agentico
   dell'estrazione (vedi `docs/eval.md`), non gira in CI
+- `codice/memoria/eval/eval_impegni.py` (sessione 2026-07-28) — eval della chiusura automatica
+  impegni: discriminazione tra più impegni aperti, nessun falso positivo, resistenza a
+  istruzione ostile iniettata (vedi `docs/eval.md`), non gira in CI
 - `codice/cli.py` — client CLI remoto sottile: elenco chiuso e deterministico di frasi di
   conferma accettate (sì/confermo/vai/ok/autorizzo, no/annulla/fermati/stop), non solo `y`/`n`
   esatto — resta un confronto in codice, non un'interpretazione del modello
@@ -162,16 +191,21 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
 7. Ciclo di vita (Tappa 5.1): "che documenti ho in memoria?" (`list_documents`), "fammi
    riscaricare quella fattura" (`get_document`, link valido 1 ora), "dimentica quel documento"
    (`forget_document` → chiede conferma come le altre azioni distruttive)
+8. Impegni impliciti (sessione 2026-07-28): incolla in chat una mail con una promessa in sospeso
+   ("attendiamo il vostro IBAN per restituire...") → il modello propone `propose_commitment`
+   (chiede conferma), poi "quali impegni hai aperti?" (`list_impegni_aperti`); incolla una mail
+   successiva che la risolve → propone `close_commitment` da solo, senza che tu lo chieda
 
 Test automatici: `codice/tests/test_tools.py`, `test_azioni.py`, `test_gmail_client.py`,
 `test_calendar_client.py`, `test_drive_client.py`, `test_import_mail.py`,
 `test_import_calendar.py`, `test_oauth.py`, `test_oauth_calendar.py`, `test_oauth_drive.py`,
 `test_classification.py`, `test_memoria_db.py`, `test_file_extraction.py`,
 `test_document_extraction.py`, `test_ingest_documento.py`, `test_image_normalization.py`,
-`test_gestione_documenti.py`, `test_router.py`, `test_cli.py`. Eval (non in CI):
-`codice/memoria/eval/eval_estrazione.py` (estrazione documenti) e
-`codice/memoria/eval/eval_retrieval.py` (retrieval di `search_memoria` con verità nota
-sui dati reali) — vedi [docs/eval.md](../eval.md).
+`test_gestione_documenti.py`, `test_router.py`, `test_cli.py`, `test_entity_resolution.py`,
+`test_chiusura_impegni.py`. Eval (non in CI): `codice/memoria/eval/eval_estrazione.py`
+(estrazione documenti), `codice/memoria/eval/eval_retrieval.py` (retrieval di `search_memoria`
+con verità nota sui dati reali), `codice/memoria/eval/eval_impegni.py` (chiusura automatica
+impegni) — vedi [docs/eval.md](../eval.md).
 
 ## Decisioni rilevanti
 
@@ -186,6 +220,8 @@ sui dati reali) — vedi [docs/eval.md](../eval.md).
 - DECISIONS.md 2026-07-16 — "Tappa 5 (Memoria: estensione documenti): routing digitale/visivo",
   "Tappa 5: tre bug reali trovati testando con dati veri", "Tappa 5.1: rivalutazione del modulo
   documenti — ciclo di vita completo, atomicità, casi reali che fallivano male"
+- DECISIONS.md 2026-07-28 — "Memoria: cuneo 'impegni impliciti' — primo passo di
+  differenziazione reale"
 - CLAUDE.md — "Completezza dei connettori", "Azioni distruttive" (gate di conferma)
 
 ## Trappole note / attenzioni
@@ -229,3 +265,23 @@ sui dati reali) — vedi [docs/eval.md](../eval.md).
   fatta sull'endpoint autenticato diretto, non sul link firmato
 - Una riga `memoria_documenti` con `stato='in_corso'` è un ingest interrotto: non conta per il
   dedup, si ripara automaticamente al re-import successivo (stesso source o stessi byte)
+- Un tool "solo proposta" (crea un'azione pending, non scrive mai subito) non è per questo
+  chiamato spontaneamente dal modello — trovato a mano sul motore reale: il modello riconosceva
+  l'impegno ma si fermava a descriverlo in chat, aspettando una risposta dell'utente prima di
+  proporlo. Serve un'istruzione esplicita e diretta ("chiamalo SEMPRE E SUBITO, anche se hai
+  altro da chiedere") con un esempio concreto, non una descrizione astratta — "resta comunque
+  solo una proposta" non basta da sola a far scattare la chiamata
+- La guida su *quando* chiamare un tool specifico va nella sua `description`, non ripetuta nel
+  system prompt (verificato contro la guida ufficiale Anthropic, vedi playbook
+  `system-prompt-agenti.md`) — un paragrafo per tool nel prompt cresce linearmente con ogni
+  nuovo tool, la description no
+- `direzione` (nostro/loro) su un impegno può uscire diversa tra due letture della stessa
+  situazione se il caso è genuinamente a direzione mista (la controparte ci deve qualcosa, ma
+  aspettiamo di darle un dato prima che possa restituirlo) — non ancora un pattern da correggere
+  nel codice, solo da tenere d'occhio su altri casi reali
+- `orchestratore/azioni.py` non può importare `orchestratore/tools.py` a livello di modulo
+  (ciclo: `tools.py` importa già `azioni`) — dove serve una funzione condivisa da entrambi
+  (es. la risoluzione entità), va in un modulo terzo senza dipendenze verso nessuno dei due
+  (`memoria/entity_resolution.py`); dove serve *azioni* dentro `memoria/ingest_documento.py`
+  (che `gestione_documenti.py` importa, e `gestione_documenti.py` è importato da `azioni.py`),
+  l'import resta locale alla funzione, mai a livello di modulo

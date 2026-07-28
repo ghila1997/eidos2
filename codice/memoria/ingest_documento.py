@@ -27,7 +27,8 @@ import anthropic
 
 from memoria import db as memoria_db
 from memoria import fatti_indicizzazione
-from orchestratore import chunking, embeddings
+from memoria.entity_resolution import slug_entity
+from orchestratore import chiusura_impegni, chunking, embeddings
 
 from . import document_extraction, file_extraction, image_normalization, storage
 
@@ -53,10 +54,6 @@ MAX_CARATTERI_ESTRAZIONE = 100_000
 
 class ErroreIngestDocumento(Exception):
     """Errore atteso (formato non supportato, file troppo grande) - non un bug."""
-
-
-def _slug_entity(nome: str) -> str:
-    return "_".join(nome.strip().lower().split())
 
 
 def _sanitizza_testo(testo: str) -> str:
@@ -138,7 +135,7 @@ async def _aggiorna_fatto_documento(
     source, contenuto cambiato) la voce vecchia con i campi ormai sbagliati
     resterebbe per sempre come se fosse attuale - trovato rivalutando la
     Tappa 5."""
-    entity_key = _slug_entity(entity_nome)
+    entity_key = slug_entity(entity_nome)
     esistente = await memoria_db.get_fatto(tenant_id, entity_key)
     note = list(esistente["data"].get("note", [])) if esistente else []
     documenti = list(esistente["data"].get("documenti", [])) if esistente else []
@@ -233,6 +230,24 @@ async def importa_documento(
             documento_id, tipo_documento, estrazione.get("campi", {}),
         )
     await memoria_db.segna_documento_completo(tenant_id, documento_id)
+
+    # Chiusura automatica di impegni aperti, stesso principio della mail
+    # (vedi orchestratore/import_mail.py) - un estratto conto o una ricevuta
+    # caricati possono risolvere un impegno in sospeso. Import locale di
+    # azioni: import a livello di modulo creerebbe un ciclo con
+    # gestione_documenti.py, che importa già FONTI da qui.
+    impegni_aperti = await memoria_db.get_impegni_aperti(tenant_id)
+    if impegni_aperti:
+        impegno_id = await chiusura_impegni.valuta_chiusura(testo, impegni_aperti)
+        if impegno_id is not None:
+            from orchestratore import azioni
+            await azioni.crea_azione_pending(
+                tenant_id, azioni.TIPO_CLOSE_COMMITMENT,
+                {
+                    "impegno_id": impegno_id,
+                    "motivo": f"rilevato automaticamente dal documento '{nome_file}' (id {documento_id})",
+                },
+            )
     if entity_nome:
         return (
             f"Documento {verbo} (id {documento_id}, tipo {tipo_documento}): "

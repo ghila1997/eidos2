@@ -1165,3 +1165,97 @@ azione → risposta parlata) verificata end-to-end con voce vera, inclusi i tre 
 dello STOP 2 finale — frase intera senza pause, ripensamento a metà frase (nessun accenno alla
 risposta sbagliata, ora garantito per costruzione: speculativo disattivato, nessun tentativo da
 annullare), frase corta senza pause.
+
+---
+
+## 2026-07-28 — Memoria: cuneo "impegni impliciti" — primo passo di differenziazione reale
+
+**Contesto**: sessione di audit del modulo Memoria contro una spec esterna di architettura
+("memory-business.md", O1-O4: ragionamento in scrittura, entità collegate cross-source, fatti
+con provenienza, fatti derivati). L'audit codice-alla-mano ha trovato tutti e quattro gli
+obbligatori parziali o assenti (vedi tracciamento fatto in chat: `remember_fact` scrive solo su
+richiesta esplicita, `_slug_entity` non risolve entità cross-source, i fatti non hanno
+`source`/`source_excerpt`/`confidence` strutturati, zero derivazione). Discussione successiva
+sul posizionamento di prodotto: il layer di memoria da solo non differenzia (lo fanno già
+Mem0/Letta/Zep e i CRM-AI), la differenziazione vera sta in un cuneo stretto — un solo lavoro
+fatto bene, non l'intera architettura O1-O4 insieme (rischio esplicito: ricadere nell'errore di
+Eidos v1, costruire tutto isolato prima di validarlo). Cuneo scelto, validato su dati reali
+(37 mail vere di Nastro Tecno srl, non dati di test): **impegni impliciti** — promesse prese via
+mail/documento che non vivono in nessun calendario/todo-list (es. "attendiamo il vostro IBAN
+per restituire il doppio pagamento"), trovate in almeno due casi reali indipendenti nella posta
+del founder.
+
+**Decisione — ambito**: costruito il cuneo "fatto bene" (non una versione minima), scoped
+esplicitamente a impegni, non generalizzato al resto di Memoria:
+- `propose_commitment`/`close_commitment` (`codice/orchestratore/tools.py`): mai scrittura
+  diretta, sempre azione pending confermata dall'utente (stesso principio di `remember_fact`,
+  DECISIONS.md 2026-07-15 "scrittura sempre esplicita, mai automatica" — qui la novità è che la
+  *proposta* è automatica, non la scrittura).
+- Nuova tabella `memoria_impegni` (migration `20260723100000`): `entity_key`, `descrizione`,
+  `direzione` (nostro/loro), `source_type`/`source_id`/`source_excerpt`, `observed_at`,
+  `scadenza`, `stato`, `confidence` — schema dedicato invece di infilarlo in `memoria_fatti.data`
+  perché uno stato che cambia nel tempo va interrogato trasversalmente, scomodo su jsonb.
+- `list_impegni_aperti`: superficie di lettura dedicata (non dentro `search_memoria`, stesso
+  motivo per cui i fatti hanno già una garanzia ilike separata dal ranking semantico — un
+  impegno aperto non deve dipendere dal ranking per emergere).
+- Chiusura rilevata **automaticamente** su ogni mail/documento genuinamente nuovo in ingresso
+  (`codice/orchestratore/chiusura_impegni.py`): non un pre-filtro per mittente/entità (quella
+  risoluzione deterministica è il problema difficile di O2, vedi sotto) ma una singola chiamata
+  Haiku economica che valuta il testo contro **tutti** gli impegni aperti del tenant insieme —
+  zero chiamata se non ce ne sono (controllo mirato, costo quasi zero nel caso comune). Stesso
+  gate: la chiusura resta sempre una proposta, mai eseguita da sola. Il **calendario resta
+  fuori**: rilevare un evento concluso richiede accorgersi che il tempo è passato, non che è
+  arrivato un dato nuovo — serve lo scheduler di Tappa 10 (Automazioni), non ancora costruito,
+  stesso motivo già scritto in ROADMAP.md per l'automazione "evento calendario concluso".
+
+**Decisione — risoluzione entità**: `_slug_entity` (duplicata identica in `tools.py` e
+`ingest_documento.py`) consolidata in `codice/memoria/entity_resolution.py`, con normalizzazione
+dei suffissi societari più comuni (S.p.A., Srl, S.r.l., ecc.) prima dello slug — trovato un caso
+reale che l'avrebbe rotto ("Isagro" vs "ISAGRO S.p.A." dovevano risolvere alla stessa entità).
+Consolidamento motivato anche da un vincolo tecnico: `orchestratore/azioni.py` non può importare
+`orchestratore/tools.py` (ciclo — `tools.py` importa già `azioni`), quindi la funzione doveva
+comunque vivere altrove per essere richiamabile da entrambi. **Non generalizzato oltre**: la
+risoluzione resta "slug + suffissi noti", non una vera entity-resolution cross-source (O2) — due
+test esistenti (`test_ingest_documento.py`) che assumevano il vecchio comportamento
+("Rossi Srl" → `rossi_srl`) sono stati aggiornati al nuovo, corretto (`rossi`), non lasciati a
+incorporare il difetto.
+
+**Bug comportamentale reale trovato e corretto in produzione (non solo eval)**: verifica
+end-to-end guidata a mano sul motore agente vero (`agente.motore_per`, stesso codice di
+`/chat`), sul tenant reale del founder, con un caso reale adattato da FATT.911/Nastro Tecno. Il
+modello **capiva** l'impegno ma non chiamava `propose_commitment`: si fermava a descriverlo in
+prosa e a fare una domanda di chiarimento, aspettando la risposta dell'utente prima di
+proporlo — nonostante `propose_commitment` non sia rischioso (resta comunque in attesa di
+conferma). Fix in due passi: (1) istruzione più direttiva nel prompt/tool description ("SEMPRE E
+SUBITO", con un esempio concreto invece di una descrizione astratta) — verificato che risolve
+col re-run dello stesso scenario reale; (2) **riequilibrio** tra system prompt e tool
+description dopo che il founder ha segnalato il rischio di un prompt che cresce linearmente con
+ogni tool: verificato contro la guida ufficiale Anthropic "Writing effective tools for AI
+agents" che la guida specifica-per-tool va nella `description` del tool, il prompt tiene solo un
+principio trasversale riusabile per l'intera categoria "tool di proposta" (playbook aggiornato,
+vedi `playbook/system-prompt-agenti.md`). Ri-verificato end-to-end dopo il riequilibrio: stesso
+comportamento corretto con un prompt più snello.
+
+**Osservazione non risolta**: nello stesso scenario ripetuto due volte, il campo `direzione`
+("nostro"/"loro") è uscito diverso tra un run e l'altro — il caso reale è genuinamente a
+direzione mista (la controparte ci deve i soldi, ma aspettiamo di darle l'IBAN prima che possa
+restituirli). Non bloccante, già annotato come edge case nel design iniziale: da tenere
+d'occhio se emergono altri casi reali ambigui, non ancora un pattern da correggere nel codice.
+
+**Verifica**: 307 test automatici (nuovi: `test_entity_resolution.py`,
+`test_chiusura_impegni.py`, più estensioni a `test_tools.py`/`test_azioni.py`/`test_cli.py`/
+`test_memoria_db.py`/`test_import_mail.py`/`test_ingest_documento.py`), tutti TDD (red-green
+per ogni pezzo). Eval reale (`codice/memoria/eval/eval_impegni.py`, 5/5 PASS, vedi
+`docs/eval.md`): discriminazione tra più impegni aperti, nessun falso positivo, resistenza a
+istruzione ostile iniettata nel testo (stesso principio di `eval_estrazione.py`). Verifica
+end-to-end sul motore agente reale, sul tenant reale del founder (non solo eval scriptato):
+propose→conferma→list→chiusura automatica→conferma→list, dati di test ripuliti dopo la verifica
+per non lasciare in memoria un caso in parte inventato (l'email di risoluzione usata per il test
+non era reale, mescolava due controparti diverse).
+
+**Esplicitamente fuori scope di questo giro** (dichiarato, non tagliato in silenzio): nessun
+fatto derivato (O4 — richiede volume reale di impegni tracciati per validare cosa vale derivare,
+non ce l'abbiamo ancora); nessun trigger di ingest automatico su schedulazione (resta
+conversazionale/on-demand, l'automazione a orologio è Tappa 10); nessuna generalizzazione della
+risoluzione entità al resto di Memoria (`remember_fact`, documenti) oltre al consolidamento
+tecnico già fatto.

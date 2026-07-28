@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -77,3 +79,79 @@ async def test_get_preferenze_richiede_bound_esplicito(respx_mock):
 
     assert risultato == {"tono": "diretto"}
     assert route.calls.last.request.url.params["limit"] == str(memoria_db.MAX_PREFERENZE)
+
+
+@pytest.mark.asyncio
+async def test_upsert_impegno_inserisce_con_stato_aperto(respx_mock):
+    route = respx_mock.post(f"{SUPABASE_URL}/rest/v1/memoria_impegni").mock(
+        return_value=httpx.Response(201, json=[{"id": "impegno-1"}])
+    )
+
+    impegno_id = await memoria_db.upsert_impegno(
+        TENANT,
+        entity_key="isagro",
+        descrizione="Restituire pagamento doppio fattura 725FE",
+        direzione="nostro",
+        source_type="gmail",
+        source_id="msg-1",
+        source_excerpt="si richiede risarcimento doppio pagamento",
+        observed_at="2026-07-21T09:53:31+00:00",
+        scadenza=None,
+        confidence=0.9,
+    )
+
+    assert impegno_id == "impegno-1"
+    corpo = json.loads(route.calls.last.request.content)
+    assert corpo["tenant_id"] == TENANT
+    assert corpo["entity_key"] == "isagro"
+    assert corpo["direzione"] == "nostro"
+    assert corpo["stato"] == "aperto"
+    assert corpo["confidence"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_get_impegni_aperti_filtra_tenant_e_stato(respx_mock):
+    route = respx_mock.get(f"{SUPABASE_URL}/rest/v1/memoria_impegni").mock(
+        return_value=httpx.Response(200, json=[{"entity_key": "isagro", "stato": "aperto"}])
+    )
+
+    risultato = await memoria_db.get_impegni_aperti(TENANT)
+
+    assert risultato[0]["entity_key"] == "isagro"
+    params = route.calls.last.request.url.params
+    assert params["tenant_id"] == f"eq.{TENANT}"
+    assert params["stato"] == "eq.aperto"
+
+
+@pytest.mark.asyncio
+async def test_chiudi_impegno_marca_stato_chiuso_con_timestamp(respx_mock):
+    route = respx_mock.patch(f"{SUPABASE_URL}/rest/v1/memoria_impegni").mock(
+        return_value=httpx.Response(200, json=[{"id": "impegno-1"}])
+    )
+
+    await memoria_db.chiudi_impegno(TENANT, "impegno-1")
+
+    richiesta = route.calls.last.request
+    assert richiesta.url.params["tenant_id"] == f"eq.{TENANT}"
+    assert richiesta.url.params["id"] == "eq.impegno-1"
+    corpo = json.loads(richiesta.content)
+    assert corpo["stato"] == "chiuso"
+    assert "chiuso_il" in corpo
+
+
+@pytest.mark.asyncio
+async def test_trova_impegno_simile_filtra_entity_e_source(respx_mock):
+    """Base per la deduplica: stessa mail riproposta due volte non deve
+    creare doppioni (vedi contratto STOP 1, punto 8)."""
+    route = respx_mock.get(f"{SUPABASE_URL}/rest/v1/memoria_impegni").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    risultato = await memoria_db.trova_impegno_simile(TENANT, "isagro", "gmail", "msg-1")
+
+    assert risultato is None
+    params = route.calls.last.request.url.params
+    assert params["tenant_id"] == f"eq.{TENANT}"
+    assert params["entity_key"] == "eq.isagro"
+    assert params["source_type"] == "eq.gmail"
+    assert params["source_id"] == "eq.msg-1"

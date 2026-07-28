@@ -14,7 +14,17 @@
   di Tappa 4 (fatto sepolto sotto chunk più simili) mai scriptata prima. È la risposta al
   punto più solido del documento: senza metriche, "ottimizzato" è un'opinione.
 
-## Orientamento preso (2026-07-19) — da formalizzare nel ciclo modulo dopo la Tappa 6
+## Formalizzato (2026-07-28) — in forma scoped, non generica
+
+- **Proposta di fatti in conversazione, con conferma via azione pending.** L'orientamento sotto
+  è stato formalizzato, ma non come `propose_fact` generico: scoped a **impegni impliciti**
+  (promesse prese via mail/documento, non fatti qualsiasi), scelto come primo cuneo di
+  differenziazione dopo audit del modulo Memoria e discussione di posizionamento prodotto — vedi
+  DECISIONS.md 2026-07-28 "Memoria: cuneo 'impegni impliciti'" e ROADMAP.md Tappa 2.1. Il
+  meccanismo (`propose_commitment`/azione pending) è esattamente quello descritto sotto; la
+  generalizzazione a "qualunque fatto" resta non fatta, non è stato il bisogno reale trovato.
+
+## Orientamento preso (2026-07-19) — formalizzato (vedi sopra), testo originale invariato
 
 - **Proposta di fatti in conversazione (`propose_fact`), con conferma via azione pending.**
   Il documento propone estrazione automatica dei fatti a fine sessione; contraddice

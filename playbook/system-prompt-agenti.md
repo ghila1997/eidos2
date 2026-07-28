@@ -54,6 +54,14 @@
   chiedere conferma testuale ridondante, mai a implementare la vera autorizzazione.
 - L'elenco dei tool disponibili non si ripete a mano nel prompt: resta nelle description dei
   tool stessi (MCP server) — duplicarlo crea drift quando un tool cambia firma.
+- **La guida su *quando* chiamare un tool specifico (esempi, casi limite, formato atteso) vive
+  nella `description` di quel tool, non nel system prompt** — verificato contro la guida
+  ufficiale Anthropic "Writing effective tools for AI agents" (vedi DECISIONS.md 2026-07-28,
+  "Memoria: cuneo impegni impliciti"). Nel prompt resta solo un principio *trasversale*, quando
+  si applica a più tool della stessa categoria (es. "i tool che creano solo una proposta in
+  attesa di conferma vanno chiamati subito, mai rimandati in attesa di una risposta
+  dell'utente") — una riga sola, riusabile per ogni tool futuro dello stesso tipo, non un
+  paragrafo per tool che farebbe crescere il prompt linearmente con ogni nuovo tool.
 
 ## 3. Verifica prima di dichiarare finito
 

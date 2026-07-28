@@ -36,6 +36,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from memoria import db as memoria_db
 from memoria import file_extraction, gestione_documenti
+from memoria.entity_resolution import slug_entity
 from memoria.gestione_documenti import ErroreGestioneDocumento
 from memoria.ingest_documento import (
     FONTI,
@@ -54,10 +55,6 @@ SERVER_NAME = "eidos_orchestratore"
 
 def _testo(contenuto: str) -> dict:
     return {"content": [{"type": "text", "text": contenuto}]}
-
-
-def _slug_entity(nome: str) -> str:
-    return "_".join(nome.strip().lower().split())
 
 
 def _fine_default(inizio: str, tutto_il_giorno: bool) -> str:
@@ -107,6 +104,8 @@ async def _autorizza(tenant_id: str, nome_tool: str, categoria: str, **contesto_
         return None
     if categoria == supervisor.CATEGORIA_DISTRUTTIVA and verdetto["verdict"] == supervisor.VERDICT_ASK_USER:
         return None
+    if categoria == supervisor.CATEGORIA_PROPOSTA and verdetto["verdict"] == supervisor.VERDICT_ASK_USER:
+        return None
     return verdetto
 
 
@@ -147,6 +146,33 @@ async def _search_memoria(tenant_id: str, query: str, tipo: str | None = None) -
     return "Risultati trovati:\n" + "\n".join(righe)
 
 
+def _anzianita_giorni(observed_at: str) -> int:
+    osservato = datetime.fromisoformat(observed_at)
+    if osservato.tzinfo is None:
+        osservato = osservato.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - osservato).days
+
+
+async def _list_impegni_aperti(tenant_id: str) -> str:
+    """Superficie di lettura degli impegni ancora aperti (lettura, non
+    distruttiva - stessa categoria di search_memoria). Ordinata per
+    anzianità/scadenza già a livello di query (memoria_db.get_impegni_aperti);
+    qui si aggiunge solo l'anzianità in giorni, guard minimo di freschezza
+    richiesto anche prima di un derivato vero (vedi memory-business.md §5)."""
+    impegni = await memoria_db.get_impegni_aperti(tenant_id)
+    if not impegni:
+        return "Nessun impegno aperto in memoria."
+    righe = []
+    for imp in impegni:
+        giorni = _anzianita_giorni(imp["observed_at"])
+        scadenza = f", scadenza {imp['scadenza']}" if imp.get("scadenza") else ""
+        righe.append(
+            f"- [id {imp['id']}] {imp['entity_key']} ({imp['direzione']}): {imp['descrizione']} "
+            f"— aperto da {giorni} giorni{scadenza}"
+        )
+    return "Impegni aperti:\n" + "\n".join(righe)
+
+
 async def _remember_fact(tenant_id: str, nome: str, nota: str, tipo: str = "persona") -> str:
     """Scrittura sempre esplicita, mai automatica (vedi tool description e
     DECISIONS.md 2026-07-15): il vincolo vive nella description del tool,
@@ -157,7 +183,7 @@ async def _remember_fact(tenant_id: str, nome: str, nota: str, tipo: str = "pers
     if rifiuto := await _autorizza(tenant_id, "remember_fact", supervisor.CATEGORIA_IMMEDIATA):
         return f"Azione non consentita: {rifiuto['message']}"
 
-    entity_key = _slug_entity(nome)
+    entity_key = slug_entity(nome)
     esistente = await memoria_db.get_fatto(tenant_id, entity_key)
     note = list(esistente["data"].get("note", [])) if esistente else []
     note.append({"testo": nota, "salvato_il": datetime.now(timezone.utc).isoformat()})
@@ -568,6 +594,61 @@ async def _send_email(
     )
 
 
+async def _propose_commitment(
+    tenant_id: str,
+    entity_nome: str,
+    descrizione: str,
+    direzione: str,
+    source_type: str,
+    source_id: str,
+    source_excerpt: str,
+    observed_at: str,
+    confidence: float,
+    scadenza: str | None = None,
+) -> str:
+    """Propone un impegno implicito (nostro verso terzi o terzi verso noi)
+    notato leggendo mail/documenti in conversazione - mai scritto subito
+    (vedi DECISIONS.md 2026-07-15, "scrittura sempre esplicita, mai
+    automatica"): crea un'azione pending, la scrittura reale in
+    memoria_impegni avviene solo a conferma esplicita dell'utente."""
+    if rifiuto := await _autorizza(tenant_id, "propose_commitment", supervisor.CATEGORIA_PROPOSTA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    azione_id = await azioni.crea_azione_pending(
+        tenant_id, azioni.TIPO_PROPOSE_COMMITMENT,
+        {
+            "entity_nome": entity_nome,
+            "descrizione": descrizione,
+            "direzione": direzione,
+            "source_type": source_type,
+            "source_id": source_id,
+            "source_excerpt": source_excerpt,
+            "observed_at": observed_at,
+            "scadenza": scadenza,
+            "confidence": confidence,
+        },
+    )
+    return (
+        f"Proposta in attesa di conferma (id {azione_id}): impegno su {entity_nome} — "
+        f"{descrizione}. L'utente deve confermare esplicitamente prima che venga salvato."
+    )
+
+
+async def _close_commitment(tenant_id: str, impegno_id: str, motivo: str) -> str:
+    """Chiude un impegno notato come risolto in conversazione (es. l'utente
+    dice 'ho restituito il bonifico a Isagro'). Stessa conferma esplicita
+    dell'apertura: chiudere tocca stato canonico quanto scriverlo."""
+    if rifiuto := await _autorizza(tenant_id, "close_commitment", supervisor.CATEGORIA_PROPOSTA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    azione_id = await azioni.crea_azione_pending(
+        tenant_id, azioni.TIPO_CLOSE_COMMITMENT,
+        {"impegno_id": impegno_id, "motivo": motivo},
+    )
+    return (
+        f"Proposta in attesa di conferma (id {azione_id}): chiusura impegno {impegno_id} — "
+        f"{motivo}. L'utente deve confermare esplicitamente prima che venga marcato chiuso."
+    )
+
+
 async def _reply_email(
     tenant_id: str, message_id: str, corpo: str,
     destinatario: str | None = None, cc: str | None = None, bcc: str | None = None,
@@ -855,6 +936,101 @@ def crea_server(tenant_id: str):
         return _testo(await _remember_fact(
             tenant_id, args["nome"], args["nota"], tipo=args.get("tipo", "persona")
         ))
+
+    @tool(
+        "list_impegni_aperti",
+        (
+            "Elenca gli impegni aperti in memoria (promesse/obblighi presi "
+            "via mail o documenti, nostri verso terzi o di terzi verso di "
+            "noi, ancora non risolti) - con anzianità in giorni e scadenza "
+            "se nota. Usa quando l'utente chiede 'cosa è ancora in sospeso', "
+            "'cosa devo ancora fare/ricevere', o quando l'entità di cui si "
+            "parla in conversazione ha impegni aperti rilevanti da "
+            "menzionare spontaneamente."
+        ),
+        {"type": "object", "properties": {}},
+    )
+    async def list_impegni_aperti(args: dict) -> dict:
+        return _testo(await _list_impegni_aperti(tenant_id))
+
+    @tool(
+        "propose_commitment",
+        (
+            "Propone un impegno implicito notato leggendo una mail o un "
+            "documento in conversazione: una promessa presa (nostra verso "
+            "terzi, o di terzi verso di noi) che non vive in nessun "
+            "calendario/todo-list - es. 'restituire un pagamento doppio non "
+            "appena arriva l'IBAN', 'confermare l'installazione entro "
+            "venerdì'. NON per impegni già strutturati altrove (appuntamenti "
+            "-> create_event). Crea solo una proposta in attesa di conferma, "
+            "non scrive subito - per questo chiamalo SEMPRE E SUBITO appena "
+            "riconosci un impegno nel testo che stai leggendo, nello stesso "
+            "turno, anche se hai anche altro da chiedere all'utente: es. una "
+            "mail dice 'attendiamo il vostro IBAN per restituire il "
+            "pagamento' -> chiama subito propose_commitment per l'impegno, e "
+            "SE vuoi chiedi pure anche l'IBAN in chat per una bozza di "
+            "risposta, ma non aspettare la sua risposta prima di proporre "
+            "l'impegno: sono due cose indipendenti. direzione='nostro' se "
+            "dobbiamo agire noi per primi (es. restituire un pagamento), "
+            "'loro' se aspettiamo un'azione/risposta della controparte. "
+            "source_excerpt deve essere la frase ESATTA della fonte, non una "
+            "parafrasi. observed_at è la data della mail/documento originale "
+            "(non oggi). Se il documento non nomina una controparte chiara, "
+            "non chiamare questo tool."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "entity_nome": {"type": "string", "description": "Nome della controparte, es. 'Isagro'"},
+                "descrizione": {"type": "string", "description": "L'impegno in forma normalizzata"},
+                "direzione": {"type": "string", "enum": ["nostro", "loro"]},
+                "source_type": {"type": "string", "enum": ["gmail", "documento"]},
+                "source_id": {"type": "string"},
+                "source_excerpt": {"type": "string", "description": "Frase esatta della fonte"},
+                "observed_at": {"type": "string", "description": "Data ISO della mail/documento originale"},
+                "confidence": {"type": "number", "description": "0..1, quanto sei sicuro dell'impegno e della controparte"},
+                "scadenza": {"type": "string", "description": "Data ISO se esplicita nel testo, altrimenti omesso"},
+            },
+            "required": [
+                "entity_nome", "descrizione", "direzione", "source_type",
+                "source_id", "source_excerpt", "observed_at", "confidence",
+            ],
+        },
+    )
+    async def propose_commitment(args: dict) -> dict:
+        return _testo(await _propose_commitment(
+            tenant_id,
+            entity_nome=args["entity_nome"],
+            descrizione=args["descrizione"],
+            direzione=args["direzione"],
+            source_type=args["source_type"],
+            source_id=args["source_id"],
+            source_excerpt=args["source_excerpt"],
+            observed_at=args["observed_at"],
+            confidence=args["confidence"],
+            scadenza=args.get("scadenza"),
+        ))
+
+    @tool(
+        "close_commitment",
+        (
+            "Chiude un impegno aperto notato come risolto in conversazione "
+            "(es. l'utente dice 'ho restituito il bonifico a Isagro', o una "
+            "mail/documento letto mostra che è stato risolto). Usa l'id "
+            "mostrato da list_impegni_aperti. Crea solo una proposta in "
+            "attesa di conferma, non chiude subito."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "impegno_id": {"type": "string"},
+                "motivo": {"type": "string", "description": "Come/perché risulta risolto"},
+            },
+            "required": ["impegno_id", "motivo"],
+        },
+    )
+    async def close_commitment(args: dict) -> dict:
+        return _testo(await _close_commitment(tenant_id, args["impegno_id"], args["motivo"]))
 
     @tool(
         "draft_email",
@@ -1435,7 +1611,8 @@ def crea_server(tenant_id: str):
         name=SERVER_NAME,
         version="1.0.0",
         tools=[
-            search_memoria, remember_fact, draft_email, send_email, reply_email, forward_email,
+            search_memoria, remember_fact, propose_commitment, list_impegni_aperti, close_commitment,
+            draft_email, send_email, reply_email, forward_email,
             send_draft, trash_email, mark_email, organize_email, list_labels, list_attachments, get_attachment,
             import_document, list_documents, get_document, forget_document,
             search_events, check_availability, respond_to_invite, create_event, update_event, delete_event,
@@ -1448,6 +1625,9 @@ def crea_server(tenant_id: str):
 ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__search_memoria",
     f"mcp__{SERVER_NAME}__remember_fact",
+    f"mcp__{SERVER_NAME}__propose_commitment",
+    f"mcp__{SERVER_NAME}__list_impegni_aperti",
+    f"mcp__{SERVER_NAME}__close_commitment",
     f"mcp__{SERVER_NAME}__draft_email",
     f"mcp__{SERVER_NAME}__send_email",
     f"mcp__{SERVER_NAME}__reply_email",

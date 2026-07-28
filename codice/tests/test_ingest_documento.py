@@ -12,6 +12,7 @@ import hashlib
 import pytest
 
 from memoria import ingest_documento
+from orchestratore import azioni
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 
@@ -71,6 +72,9 @@ class _SpyDb:
 
     async def elimina_chunk_documento(self, tenant_id, documento_id):
         pass
+
+    async def get_impegni_aperti(self, tenant_id):
+        return []
 
 
 @pytest.fixture
@@ -210,12 +214,15 @@ async def test_entity_riconosciuta_scrive_fatti_con_documenti_array(monkeypatch,
     )
 
     assert "Rossi Srl" in risultato
-    fatto = spy_db.fatti["rossi_srl"]
+    # entity_key normalizzato senza il suffisso societario (vedi
+    # memoria/entity_resolution.py: "Rossi Srl" e un'eventuale "Rossi S.r.l."
+    # devono risolvere alla stessa entità).
+    fatto = spy_db.fatti["rossi"]
     assert fatto["data"]["nome"] == "Rossi Srl"
     assert len(fatto["data"]["documenti"]) == 1
     assert fatto["data"]["documenti"][0]["campi"]["importo"] == "500.00"
     # il fatto viene anche re-indicizzato per la ricerca semantica (source_type "fatto")
-    assert ("source", "fatto", "rossi_srl") in spy_db.documenti
+    assert ("source", "fatto", "rossi") in spy_db.documenti
 
 
 @pytest.mark.asyncio
@@ -290,7 +297,7 @@ async def test_update_entita_sostituisce_voce_documento_nel_fatto(monkeypatch, s
         TENANT, "drive_file", "file-1", "fattura.txt", b"versione 2", "text/plain"
     )
 
-    documenti_fatto = spy_db.fatti["rossi_srl"]["data"]["documenti"]
+    documenti_fatto = spy_db.fatti["rossi"]["data"]["documenti"]
     assert len(documenti_fatto) == 1
     assert documenti_fatto[0]["campi"]["importo"] == "200.00"
 
@@ -502,3 +509,48 @@ async def test_immagine_illeggibile_errore_gestito(monkeypatch, spy_db):
         await ingest_documento.importa_documento(
             TENANT, "locale", "/tmp/rotta.jpg", "rotta.jpg", b"corrotti", "image/jpeg"
         )
+
+
+@pytest.mark.asyncio
+async def test_documento_che_risolve_impegno_aperto_propone_chiusura(spy_db, monkeypatch):
+    """Stesso principio della mail (vedi test_import_mail.py): un documento
+    importato (es. estratto conto, ricevuta) che risolve un impegno aperto
+    propone la chiusura, mai la esegue da solo."""
+    async def fake_estrai_testo(testo):
+        return {"tipo_documento": "altro", "campi": {}}
+
+    monkeypatch.setattr(ingest_documento.document_extraction, "estrai_da_testo", fake_estrai_testo)
+
+    impegni_aperti = [{
+        "id": "impegno-1", "entity_key": "isagro", "direzione": "nostro",
+        "descrizione": "Restituire pagamento doppio fattura 725FE",
+    }]
+
+    async def fake_get_impegni_aperti(tenant_id):
+        return impegni_aperti
+
+    monkeypatch.setattr(spy_db, "get_impegni_aperti", fake_get_impegni_aperti)
+
+    async def fake_valuta_chiusura(testo, impegni):
+        assert impegni == impegni_aperti
+        return "impegno-1"
+
+    monkeypatch.setattr(ingest_documento.chiusura_impegni, "valuta_chiusura", fake_valuta_chiusura)
+
+    azioni_create = []
+
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        azioni_create.append((tenant_id, tipo, payload))
+        return "azione-1"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    await ingest_documento.importa_documento(
+        TENANT, "locale", "/tmp/ricevuta.txt", "ricevuta.txt", b"ricevuta bonifico", "text/plain"
+    )
+
+    assert len(azioni_create) == 1
+    tenant_scritto, tipo, payload = azioni_create[0]
+    assert tenant_scritto == TENANT
+    assert tipo == azioni.TIPO_CLOSE_COMMITMENT
+    assert payload["impegno_id"] == "impegno-1"

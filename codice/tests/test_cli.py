@@ -35,6 +35,35 @@ def test_descrivi_azione_delete_event_non_solleva_keyerror():
     assert "evt-1" in _descrivi_azione(azione)
 
 
+def test_descrivi_azione_propose_commitment():
+    """Trappola: deve leggersi come frase naturale (come tutti gli altri
+    tipi), non come il fallback grezzo 'azione di tipo ...: {payload}'."""
+    azione = {
+        "tipo": "propose_commitment",
+        "payload": {
+            "entity_nome": "Isagro",
+            "descrizione": "Restituire pagamento doppio fattura 725FE",
+            "direzione": "nostro",
+        },
+    }
+    descrizione = _descrivi_azione(azione)
+    assert "Isagro" in descrizione
+    assert "Restituire pagamento doppio fattura 725FE" in descrizione
+    assert "{" not in descrizione
+    assert "azione di tipo" not in descrizione
+
+
+def test_descrivi_azione_close_commitment():
+    azione = {
+        "tipo": "close_commitment",
+        "payload": {"impegno_id": "impegno-1", "motivo": "bonifico restituito il 22/07"},
+    }
+    descrizione = _descrivi_azione(azione)
+    assert "impegno-1" in descrizione
+    assert "bonifico restituito il 22/07" in descrizione
+    assert "{" not in descrizione
+
+
 def test_descrivi_azione_tipo_sconosciuto_non_esplode():
     azione = {"tipo": "qualcosa_di_nuovo", "payload": {"x": 1}}
     assert "qualcosa_di_nuovo" in _descrivi_azione(azione)

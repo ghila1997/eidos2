@@ -20,6 +20,12 @@ policies:
     response: ask_user
     message: "Azione: {tool_name}. Confermi?"
 
+  - name: "Proposte di memoria (impegni), sempre confermate"
+    priority: 21
+    category: proposta
+    response: ask_user
+    message: "Proposta: {tool_name}. Confermi?"
+
   - name: "Default deny"
     priority: 1000
     response: deny

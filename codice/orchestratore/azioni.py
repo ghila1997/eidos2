@@ -9,7 +9,9 @@ from typing import Any
 
 from common.supabase_rest import client as _supabase_client
 from common.supabase_rest import rest_headers, supabase_settings
+from memoria import db as memoria_db
 from memoria import gestione_documenti
+from memoria.entity_resolution import slug_entity
 from . import calendar_client, drive_client, gmail_client
 
 TIPO_SEND_EMAIL = "send_email"
@@ -23,6 +25,8 @@ TIPO_DELETE_EVENT = "delete_event"
 TIPO_SHARE_FILE = "share_file"
 TIPO_TRASH_FILE = "trash_file"
 TIPO_FORGET_DOCUMENT = "forget_document"
+TIPO_PROPOSE_COMMITMENT = "propose_commitment"
+TIPO_CLOSE_COMMITMENT = "close_commitment"
 
 STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
@@ -205,6 +209,36 @@ async def _esegui_forget_document(tenant_id: str, payload: dict[str, Any]) -> No
     await gestione_documenti.dimentica_documento(tenant_id, payload["documento_id"])
 
 
+async def _esegui_propose_commitment(tenant_id: str, payload: dict[str, Any]) -> None:
+    """Unico punto in cui un impegno proposto diventa un fatto scritto in
+    memoria_impegni - solo qui, mai in tools.py (vedi DECISIONS.md
+    2026-07-15, "scrittura sempre esplicita, mai automatica"). Deduplica:
+    stessa entità+fonte già proposta -> non riscrive (vedi contratto STOP 1,
+    punto 8)."""
+    entity_key = slug_entity(payload["entity_nome"])
+    esistente = await memoria_db.trova_impegno_simile(
+        tenant_id, entity_key, payload["source_type"], payload["source_id"]
+    )
+    if esistente is not None:
+        return
+    await memoria_db.upsert_impegno(
+        tenant_id,
+        entity_key=entity_key,
+        descrizione=payload["descrizione"],
+        direzione=payload["direzione"],
+        source_type=payload["source_type"],
+        source_id=payload["source_id"],
+        source_excerpt=payload["source_excerpt"],
+        observed_at=payload["observed_at"],
+        scadenza=payload.get("scadenza"),
+        confidence=payload["confidence"],
+    )
+
+
+async def _esegui_close_commitment(tenant_id: str, payload: dict[str, Any]) -> None:
+    await memoria_db.chiudi_impegno(tenant_id, payload["impegno_id"])
+
+
 _ESECUTORI = {
     TIPO_SEND_EMAIL: _esegui_send_email,
     TIPO_REPLY_EMAIL: _esegui_reply_email,
@@ -217,4 +251,6 @@ _ESECUTORI = {
     TIPO_SHARE_FILE: _esegui_share_file,
     TIPO_TRASH_FILE: _esegui_trash_file,
     TIPO_FORGET_DOCUMENT: _esegui_forget_document,
+    TIPO_PROPOSE_COMMITMENT: _esegui_propose_commitment,
+    TIPO_CLOSE_COMMITMENT: _esegui_close_commitment,
 }

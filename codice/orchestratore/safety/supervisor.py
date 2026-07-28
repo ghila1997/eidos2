@@ -24,6 +24,7 @@ import yaml
 
 CATEGORIA_IMMEDIATA = "immediata"
 CATEGORIA_DISTRUTTIVA = "distruttiva"
+CATEGORIA_PROPOSTA = "proposta"
 
 VERDICT_ALLOW = "allow"
 VERDICT_DENY = "deny"

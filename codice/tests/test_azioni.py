@@ -379,3 +379,104 @@ async def test_conferma_no_su_forget_document_non_elimina(respx_mock, monkeypatc
 
     assert risultato["stato"] == azioni.STATO_RIFIUTATA
     assert chiamato["si"] is False
+
+
+@pytest.mark.asyncio
+async def test_conferma_propose_commitment_scrive_impegno_aperto(respx_mock, monkeypatch):
+    """Solo alla conferma esplicita l'impegno viene davvero scritto - mai
+    prima (vedi tools._propose_commitment, che crea solo l'azione pending)."""
+    payload = {
+        "entity_nome": "Isagro",
+        "descrizione": "Restituire pagamento doppio fattura 725FE",
+        "direzione": "nostro",
+        "source_type": "gmail",
+        "source_id": "msg-1",
+        "source_excerpt": "si richiede risarcimento doppio pagamento",
+        "observed_at": "2026-07-21T09:53:31+00:00",
+        "scadenza": None,
+        "confidence": 0.9,
+    }
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_PROPOSE_COMMITMENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    async def fake_trova_simile(tenant_id, entity_key, source_type, source_id):
+        return None
+
+    scritti = []
+
+    async def fake_upsert_impegno(tenant_id, **kwargs):
+        scritti.append((tenant_id, kwargs))
+        return "impegno-1"
+
+    monkeypatch.setattr(azioni.memoria_db, "trova_impegno_simile", fake_trova_simile)
+    monkeypatch.setattr(azioni.memoria_db, "upsert_impegno", fake_upsert_impegno)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert len(scritti) == 1
+    tenant_scritto, campi = scritti[0]
+    assert tenant_scritto == TENANT_A
+    assert campi["entity_key"] == "isagro"
+    assert campi["descrizione"] == "Restituire pagamento doppio fattura 725FE"
+    assert campi["direzione"] == "nostro"
+    assert campi["source_type"] == "gmail"
+    assert campi["source_id"] == "msg-1"
+    assert campi["source_excerpt"] == "si richiede risarcimento doppio pagamento"
+    assert campi["observed_at"] == "2026-07-21T09:53:31+00:00"
+    assert campi["scadenza"] is None
+    assert 0 <= campi["confidence"] <= 1
+
+
+@pytest.mark.asyncio
+async def test_conferma_propose_commitment_duplicato_non_riscrive(respx_mock, monkeypatch):
+    """Deduplica: stessa entità+fonte già proposta in precedenza -> non
+    crea un secondo impegno (vedi contratto STOP 1, punto 8)."""
+    payload = {
+        "entity_nome": "Isagro",
+        "descrizione": "Restituire pagamento doppio fattura 725FE",
+        "direzione": "nostro",
+        "source_type": "gmail",
+        "source_id": "msg-1",
+        "source_excerpt": "si richiede risarcimento doppio pagamento",
+        "observed_at": "2026-07-21T09:53:31+00:00",
+        "scadenza": None,
+        "confidence": 0.9,
+    }
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_PROPOSE_COMMITMENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    async def fake_trova_simile(tenant_id, entity_key, source_type, source_id):
+        return {"id": "impegno-esistente"}
+
+    chiamato = {"si": False}
+
+    async def fake_upsert_impegno(*args, **kwargs):
+        chiamato["si"] = True
+
+    monkeypatch.setattr(azioni.memoria_db, "trova_impegno_simile", fake_trova_simile)
+    monkeypatch.setattr(azioni.memoria_db, "upsert_impegno", fake_upsert_impegno)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiamato["si"] is False
+
+
+@pytest.mark.asyncio
+async def test_conferma_close_commitment_chiude_impegno(respx_mock, monkeypatch):
+    payload = {"impegno_id": "impegno-1", "motivo": "bonifico restituito il 22/07"}
+    _mock_azione(respx_mock, TENANT_A, tipo=azioni.TIPO_CLOSE_COMMITMENT, payload=payload)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(return_value=httpx.Response(200, json=[]))
+
+    chiusi = []
+
+    async def fake_chiudi_impegno(tenant_id, impegno_id):
+        chiusi.append((tenant_id, impegno_id))
+
+    monkeypatch.setattr(azioni.memoria_db, "chiudi_impegno", fake_chiudi_impegno)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_INVIATA
+    assert chiusi == [(TENANT_A, "impegno-1")]

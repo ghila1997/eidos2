@@ -981,3 +981,105 @@ async def test_forget_document_rifiuta_righe_non_importate(monkeypatch):
 
     assert creata["si"] is False
     assert "non trovato" in risultato
+
+
+@pytest.mark.asyncio
+async def test_list_impegni_aperti_mostra_entita_descrizione_e_anzianita(monkeypatch):
+    from memoria import db as memoria_db
+
+    async def fake_get_impegni_aperti(tenant_id):
+        return [
+            {
+                "id": "impegno-1",
+                "entity_key": "isagro",
+                "descrizione": "Restituire pagamento doppio fattura 725FE",
+                "direzione": "nostro",
+                "observed_at": "2026-06-21T09:53:31+00:00",
+                "scadenza": None,
+            }
+        ]
+
+    monkeypatch.setattr(memoria_db, "get_impegni_aperti", fake_get_impegni_aperti)
+
+    risultato = await tools._list_impegni_aperti(TENANT)
+
+    assert "isagro" in risultato
+    assert "Restituire pagamento doppio fattura 725FE" in risultato
+    assert "nostro" in risultato
+    assert "impegno-1" in risultato  # serve per poterlo chiudere dopo (close_commitment)
+
+
+@pytest.mark.asyncio
+async def test_list_impegni_aperti_nessun_impegno(monkeypatch):
+    from memoria import db as memoria_db
+
+    async def fake_get_impegni_aperti(tenant_id):
+        return []
+
+    monkeypatch.setattr(memoria_db, "get_impegni_aperti", fake_get_impegni_aperti)
+
+    risultato = await tools._list_impegni_aperti(TENANT)
+
+    assert "nessun" in risultato.lower()
+
+
+@pytest.mark.asyncio
+async def test_propose_commitment_non_scrive_subito_crea_solo_azione_pending(monkeypatch):
+    """Stessa trappola di send_email: propose_commitment non scrive mai
+    direttamente in memoria_impegni, solo crea un'azione in attesa di
+    conferma - la scrittura reale avviene solo a conferma esplicita
+    dell'utente (vedi DECISIONS.md 2026-07-15, "scrittura sempre esplicita,
+    mai automatica")."""
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        assert tenant_id == TENANT
+        assert tipo == azioni.TIPO_PROPOSE_COMMITMENT
+        assert payload == {
+            "entity_nome": "Isagro",
+            "descrizione": "Restituire pagamento doppio fattura 725FE",
+            "direzione": "nostro",
+            "source_type": "gmail",
+            "source_id": "msg-1",
+            "source_excerpt": "si richiede risarcimento doppio pagamento",
+            "observed_at": "2026-07-21T09:53:31+00:00",
+            "scadenza": None,
+            "confidence": 0.9,
+        }
+        return "azione-456"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._propose_commitment(
+        TENANT,
+        entity_nome="Isagro",
+        descrizione="Restituire pagamento doppio fattura 725FE",
+        direzione="nostro",
+        source_type="gmail",
+        source_id="msg-1",
+        source_excerpt="si richiede risarcimento doppio pagamento",
+        observed_at="2026-07-21T09:53:31+00:00",
+        confidence=0.9,
+    )
+
+    assert "azione-456" in risultato
+    assert "attesa di conferma" in risultato
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_non_chiude_subito_crea_solo_azione_pending(monkeypatch):
+    """Stessa trappola: chiudere un impegno tocca stato canonico quanto
+    aprirlo, quindi passa dalla stessa conferma esplicita (vedi contratto
+    STOP 1, punto 2)."""
+    async def fake_crea_azione(tenant_id, tipo, payload):
+        assert tenant_id == TENANT
+        assert tipo == azioni.TIPO_CLOSE_COMMITMENT
+        assert payload == {"impegno_id": "impegno-1", "motivo": "bonifico restituito il 22/07"}
+        return "azione-789"
+
+    monkeypatch.setattr(azioni, "crea_azione_pending", fake_crea_azione)
+
+    risultato = await tools._close_commitment(
+        TENANT, impegno_id="impegno-1", motivo="bonifico restituito il 22/07"
+    )
+
+    assert "azione-789" in risultato
+    assert "attesa di conferma" in risultato

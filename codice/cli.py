@@ -84,6 +84,13 @@ def _descrivi_azione(azione: dict) -> str:
         return f"modifica dell'evento {payload['event_id']}"
     if tipo == "delete_event":
         return f"cancellazione dell'evento {payload['event_id']}"
+    if tipo == "propose_commitment":
+        return (
+            f"impegno su {payload['entity_nome']} ({payload['direzione']}): "
+            f"{payload['descrizione']}"
+        )
+    if tipo == "close_commitment":
+        return f"chiusura impegno {payload['impegno_id']}: {payload['motivo']}"
     return f"azione di tipo '{tipo}': {payload}"
 
 

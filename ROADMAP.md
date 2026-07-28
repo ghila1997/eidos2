@@ -47,6 +47,30 @@
   organizzare/cestinare una mail vera, e farsi inviare un'email vera - tutte le azioni che
   spediscono o cestinano richiedono conferma esplicita prima di avvenire
 
+### Tappa 2.1 — Memoria: impegni impliciti, primo cuneo di differenziazione — ✅ fatto (2026-07-28)
+
+- Formalizza (in forma scoped, non generica) l'orientamento "proposta+conferma" già preso in
+  `notes/idee-memoria-v2.md` il 2026-07-19 e rimandato a dopo la Tappa 6 — non un fatto generico
+  (`propose_fact`), ma **impegni impliciti**: promesse prese via mail/documento che non vivono
+  in nessun calendario/todo-list, scelte come cuneo dopo audit del modulo Memoria contro una
+  spec esterna e discussione di posizionamento prodotto (vedi DECISIONS.md 2026-07-28)
+- `propose_commitment`/`close_commitment` (sempre azione pending, mai scrittura diretta),
+  tabella dedicata `memoria_impegni` (fonte+frase esatta+data+confidenza+scadenza+stato),
+  `list_impegni_aperti`, chiusura rilevata **automaticamente** su mail/documenti nuovi in
+  ingresso (Haiku economico, zero costo se non ci sono impegni aperti) — calendario
+  esplicitamente fuori, stesso motivo già scritto per l'automazione "evento calendario
+  concluso" in Tappa 10 (serve accorgersi che il tempo passa, non che arriva un dato nuovo)
+- Risoluzione entità (`_slug_entity`, duplicata in due file) consolidata in
+  `memoria/entity_resolution.py` con normalizzazione dei suffissi societari più comuni — trovato
+  un caso reale che l'avrebbe rotta ("Isagro" vs "ISAGRO S.p.A.")
+- **Finito quando**: il founder incolla in chat una mail reale con un impegno implicito, il
+  modello lo propone senza che gli venga chiesto esplicitamente, l'impegno compare in
+  `list_impegni_aperti` con fonte/frase/data corrette, e si chiude da solo quando arriva una
+  mail/documento che lo risolve — ✅ verificato end-to-end sul motore agente reale, tenant
+  reale del founder, caso adattato da una mail vera (Nastro Tecno srl/FATT.911); un bug
+  comportamentale reale trovato e corretto (il modello non chiamava il tool di proposta di sua
+  iniziativa) — vedi DECISIONS.md e [docs/orchestratore/README.md](docs/orchestratore/README.md)
+
 ## Tappa 3 — Agente Locale (prima azione reale sul PC) — ✅ fatto (2026-07-15)
 
 - **Ambiente**: si resta su un solo progetto Supabase (`eidos2`) — vedi DECISIONS.md, "Ambienti:

@@ -12,7 +12,7 @@ import hashlib
 
 from memoria import db as memoria_db
 
-from . import chunking, classification, embeddings, gmail_client
+from . import azioni, chiusura_impegni, chunking, classification, embeddings, gmail_client
 
 SOURCE_TYPE_GMAIL = "gmail"
 
@@ -25,6 +25,12 @@ async def esegui_import(tenant_id: str) -> dict[str, int]:
     importati = 0
     scartati = 0
     duplicati = 0
+    # Impegni aperti letti una volta per batch, non per mail (controllo
+    # mirato ed economico - vedi contratto STOP 1, punto 9). Se una mail nel
+    # batch chiude un impegno che una mail successiva nello stesso batch
+    # menziona di nuovo, al più si propone la chiusura due volte: la seconda
+    # conferma è un no-op idempotente su un impegno già chiuso, non un bug.
+    impegni_aperti = await memoria_db.get_impegni_aperti(tenant_id)
 
     for message_id in ids:
         msg = await gmail_client.ottieni_messaggio(access_token, message_id)
@@ -60,6 +66,17 @@ async def esegui_import(tenant_id: str) -> dict[str, int]:
             for indice, (testo, embedding) in enumerate(zip(chunk_testi, vettori)):
                 await memoria_db.insert_chunk(tenant_id, documento_id, indice, testo, embedding)
         importati += 1
+
+        if impegni_aperti:
+            impegno_id = await chiusura_impegni.valuta_chiusura(msg["corpo"], impegni_aperti)
+            if impegno_id is not None:
+                await azioni.crea_azione_pending(
+                    tenant_id, azioni.TIPO_CLOSE_COMMITMENT,
+                    {
+                        "impegno_id": impegno_id,
+                        "motivo": f"rilevato automaticamente da mail '{msg['oggetto']}' ({message_id})",
+                    },
+                )
 
     await memoria_db.set_import_cursore(tenant_id, SOURCE_TYPE_GMAIL, nuovo_cursore)
     return {
