@@ -245,30 +245,68 @@
 - **Finito quando**: un cliente paga l'abbonamento, lo stato si riflette nell'app, e il prezzo
   scelto è coperto dal costo stimato per tenant
 
-## Tappa 10 — Automazioni
+## Tappa 10 — Procedure (Assistenze, Automazioni, Attese, Risorse)
 
-- Il Claude Agent SDK non offre nulla di nativo per schedulazione o trigger su eventi (verificato
-  sulla doc ufficiale 2026-07-13: Sessions serve a riprendere una conversazione, Hooks intercetta
-  tool call dentro una sessione già in corso — nessuno dei due "risveglia" l'agente da solo).
-  Serve infrastruttura dedicata: scheduler (es. APScheduler) per esecuzioni a orario fisso,
-  webhook/poller per trigger su eventi (riusa le connessioni già attive dei Connettori Cloud,
-  es. nuova mail), storage delle definizioni automazione per tenant (Supabase). Per Gmail nello
-  specifico: `users.watch` + Cloud Pub/Sub è il meccanismo nativo di notifica push su mail
-  nuova (verificato sulla doc ufficiale Gmail API 2026-07-14, costruendo Tappa 2) - preferibile
-  a un poller quando si arriva qui, non reinventare la ruota
+Modello concettuale e design completo in [specifica-procedure.md](specifica-procedure.md) —
+decisioni strutturali in DECISIONS.md 2026-07-28. I quattro oggetti che l'utente crea/usa;
+**chi può crearli è deciso dal rischio, non dall'oggetto**. Principio unico: *scrivere fuori
+senza che nessuno guardi = Automazione*. Costruzione a fasi, ognuna eseguibile end-to-end prima
+della successiva — **vincolo duro: non invertire Fase C e Fase D**.
+
+**Fase A — Assistenze + Risorse**
+- Motore già esistente (Agent SDK), nessun esecutore, nessun trigger. Tabelle `Risorse` e
+  `Assistenze`; creazione a zero attrito; **esecuzione con set di tool read-only** (scoping per
+  Assistenza — il motore non espone i tool di scrittura, non è un'istruzione nel prompt); azione
+  singola supervisionata via Safety Supervisor. Il valore vive nel catalogo + riuso Risorse +
+  scope di lettura, non nel markdown.
+- Lo scheletro (usabile dal founder via CLI) può iniziare presto come estensione
+  dell'Orchestratore; il **catalogo client-facing** dipende da Tappa 7 (UI) e Tappa 8
+  (multi-tenant). Alimenta la Tappa 11 ("Skills pronte all'uso" → qui diventano Assistenze +
+  Risorse reali).
+
+**Fase B — Automazioni L1 + Attese**
+- Infrastruttura di trigger, prima senza scritture esterne. Il Claude Agent SDK non offre nulla
+  di nativo per schedulazione/trigger (verificato 2026-07-13: Sessions riprende una conversazione,
+  Hooks intercetta tool call in una sessione già in corso — nessuno "risveglia" l'agente da solo):
+  serve scheduler (es. APScheduler) per orari fissi, webhook/poller per eventi (riusa le
+  connessioni già attive dei Connettori Cloud). Per Gmail: `users.watch` + Cloud Pub/Sub è il
+  meccanismo nativo di push su mail nuova (verificato sulla doc Gmail API 2026-07-14) — preferibile
+  a un poller, non reinventare la ruota. Tabella `Esecuzioni` per tenant.
+- **Attese**: stesso motore L1 + tre campi (`lifecycle`/`expires_at`/`on_expire`), lista UI
+  separata "In attesa", **job di scadenza fin da subito** (o si accumulano trigger zombie). Da
+  tenere distinte dagli `impegni` di Memoria (l'impegno è un fatto; l'Attesa è una notifica
+  programmata con scadenza).
+- **Automazione "evento calendario concluso"** (identificata in Tappa 4): quando i trigger
+  esistono, rileva eventi conclusi senza un fatto collegato in Memoria e chiede al founder conferma
+  + cosa è stato deciso (scrittura poi via `remember_fact`). In Tappa 4 resta reattiva perché
+  l'infrastruttura di trigger non esiste ancora prima di qui.
 - L'ingest mail (`codice/orchestratore/import_mail.py`, Tappa 2) diventa il corpo di
-  un'automazione schedulata invece che un comando on-demand: stessa pipeline, nuovo trigger
-- **Automazione "evento calendario concluso"** (identificata costruendo Tappa 4, Connettori
-  Cloud): quando un'automazione può attivarsi su trigger, aggiungere un'automazione che rileva
-  eventi calendario conclusi senza un fatto collegato in Memoria e chiede al founder conferma +
-  cosa è stato detto/deciso (scrittura poi via `remember_fact`, vedi Tappa 4). In Tappa 4 questo
-  resta reattivo (il founder lo dice quando vuole in chat, nessun trigger automatico) proprio
-  perché l'infrastruttura di scheduling/trigger non esiste ancora prima di questa tappa
-- Esecuzione: ogni automazione, quando scatta, invoca l'Orchestratore con un prompt costruito
-  dalla definizione salvata — stesso gate di conferma sulle azioni distruttive già in vigore
-  per il resto del prodotto, nessuna eccezione perché l'azione parte da un trigger automatico
-- **Finito quando**: un cliente reale crea un'automazione (es. "ogni lunedì mattina riepilogo
-  email non lette") che si esegue da sola, rispettando i gate di conferma esistenti
+  un'automazione schedulata invece che un comando on-demand: stessa pipeline, nuovo trigger.
+- Chi crea: il cliente, liberamente a voce (nessuna scrittura esterna).
+
+**Fase C — Automazioni L3 (esecutore deterministico)**
+- Esecutore deterministico completo (stato persistente riprendibile dopo crash, timeout per
+  passo/esecuzione, retry con backoff sui `connector`, tetto di costo e di esecuzioni, log per
+  passo, sospensione dopo N fallimenti); formato YAML + validatore; `effects`/risk-level calcolati
+  dai connettori dei passi; **dry-run su dati reali senza effetti**; punti di approvazione;
+  idempotenza su ogni scrittura. Aggancio al **Safety Supervisor** al salvataggio (`effects` contro
+  permessi + limiti del verticale) e a runtime.
+- **Supera il design precedente** "automazioni agentiche con gate di conferma" (il gate `ask_user`
+  richiede un umano che in un'esecuzione non presidiata non c'è — vedi DECISIONS.md 2026-07-28). Il
+  modello viene chiamato solo nei passi `ai` via Messages API; l'unico motore agentico resta l'Agent
+  SDK per le Assistenze.
+- **Gate di uscita**: il founder scrive ≥10 automazioni L3 reali a mano e le fa girare corrette e
+  non presidiate sul motore vero, su dati veri. Sono quelle che dicono quali primitive servono.
+
+**Fase D — Creazione dal cliente (voce)**
+- Sopra un motore già provato: strato di **traduzione intento-vocale → spec corretta** + verifica
+  per il cliente (riepilogo in linguaggio naturale + riga effetti + dry-run + approvazione). Per L3
+  il cliente **configura template** scritti dal founder, non genera da zero; loop concierge per la
+  coda lunga. Prerequisiti: Fase C provata sui casi reali del founder **e** multi-tenant (Tappa 8).
+
+**Finito quando**: un cliente reale attiva un'Assistenza dal catalogo, crea a voce un'Attesa/
+Automazione L1, e configura un'Automazione L3 da template che si esegue corretta e non presidiata,
+rispettando i gate di conferma/approvazione esistenti.
 
 ## Tappa 11 — Prima del primo cliente esterno reale (checklist di lancio)
 

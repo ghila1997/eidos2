@@ -1259,3 +1259,76 @@ non ce l'abbiamo ancora); nessun trigger di ingest automatico su schedulazione (
 conversazionale/on-demand, l'automazione a orologio è Tappa 10); nessuna generalizzazione della
 risoluzione entità al resto di Memoria (`remember_fact`, documenti) oltre al consolidamento
 tecnico già fatto.
+
+---
+
+## 2026-07-28 — Procedure di Eidos: modello a quattro oggetti + esecutore deterministico
+
+**Contesto**: la Tappa 10 (Automazioni) era abbozzata come "l'automazione invoca l'Orchestratore
+agentico con lo stesso gate di conferma". Rivalutando il modulo in vista del prodotto reale
+(cliente non tecnico che crea procedure **a voce** e devono funzionare corrette, non presidiate),
+sono emersi buchi nel design precedente e la necessità di un modello più ampio. Design completo
+in [specifica-procedure.md](specifica-procedure.md). Questa voce raccoglie le cinque decisioni
+strutturali prese insieme; nascono come un'unica direzione e vanno lette insieme.
+
+**Decisione**:
+
+1. **Modello a quattro oggetti.** L'utente crea/usa quattro primitive: **Assistenze** (procedure
+   guidate, supervisionate, sola lettura), **Automazioni** (procedure autonome ricorrenti da
+   trigger, passi fissi), **Attese** (procedure effimere one-shot con scadenza), **Risorse**
+   (materiale riutilizzabile referenziato per id). Il sistema **classifica** da tre domande lette
+   dalla lingua ("parte da sola?", "scrive fuori?", "ricorrente o una volta sola?"); l'utente non
+   sceglie mai la categoria tecnica. Principio unico: *scrivere fuori senza che nessuno guardi =
+   Automazione.* Verso l'utente si evita il termine "skill" (ibrido confuso di istruzione+risorsa).
+
+2. **Automazioni con esecutore deterministico, non agentico.** Le Automazioni girano su un
+   **secondo layer di esecuzione** deterministico (legge YAML, esegue passi in ordine, gestisce
+   stato riprendibile/retry/timeout/idempotenza/tetto di costo) che chiama il modello **solo** nei
+   passi `ai` via Messages API — la stessa già usata da `classification.py`/`chiusura_impegni.py`.
+   **Non è un secondo motore agentico**: l'unico motore agentico resta l'Agent SDK, usato per le
+   Assistenze (la regola "un solo motore agentico" di CLAUDE.md è preservata). Questa scelta
+   **supera** il design precedente della Tappa 10 (automazioni agentiche con gate `ask_user`): quel
+   gate richiede un umano che risponda, che in un'esecuzione non presidiata alle 9 del mattino non
+   c'è — o si blocca o si toglie il gate. Il determinismo garantisce che l'automazione giri sempre
+   uguale; la **correttezza** la verifica il dry-run prima dell'attivazione, non lo schema.
+
+3. **Chi può creare è deciso dal rischio, non dall'oggetto.** La scala L1→L4 (calcolata dagli
+   `effects`) decide anche chi crea da zero: **L1 e Attese** → il cliente crea liberamente a voce
+   (nessuna scrittura esterna, raggio d'azione di un errore minimo); **L3** (scrive fuori) → il
+   cliente **non** genera da zero ma **configura template** scritti e testati dal founder; **L4**
+   (irreversibile/massivo) → solo admin. La coda lunga si copre con un **loop concierge** (il
+   cliente richiede → il founder scrive e testa → diventa nuovo template del catalogo), non
+   aprendo l'autoring vocale libero delle scritture. Supera l'ipotesi implicita "il cliente crea
+   tutto a voce".
+
+4. **Confine read-only dell'Assistenza imposto via tool-scoping.** Quando un'Assistenza gira, il
+   motore riceve il **solo set di tool di sola lettura** — non è un'istruzione nel system prompt,
+   è il motore che i tool di scrittura non li espone. È ciò che giustifica lo *zero attrito in
+   creazione* delle Assistenze (nessun gate). Le scritture durante un'Assistenza passano dall'azione
+   singola confermata via Safety Supervisor (`ask_user`), mai da un tool di scrittura dato al modello.
+
+5. **`effects` derivato dai connettori dichiarati nei passi.** Il blocco `effects` (e da lì il
+   risk-level) è calcolato al salvataggio dai connettori che i passi dichiarano, non da uno scan
+   semantico; guardia esplicita: un passo che sceglie un connettore in modo dinamico deve
+   dichiarare il proprio inviluppo di effetti, così `effects` non è mai sotto-dichiarato. Il gate
+   passa sempre dal **Safety Supervisor**: al salvataggio (`effects` contro permessi utente +
+   limiti `compliance/verticali/<settore>.md`) e a runtime (ogni chiamata). Nessun percorso di
+   autorizzazione parallelo.
+
+**Alternative considerate**: mantenere le automazioni agentiche col gate di conferma (scartata:
+non chiude sulle scritture non presidiate, vedi decisione 2); run agentica vincolata invece di un
+esecutore deterministico (scartata per il prodotto reale: quando è il cliente a generare a voce,
+non puoi vincolare a mano ogni procedura, serve una garanzia strutturale che *qualunque*
+automazione generata sia deterministica e validabile); creazione libera a voce di ogni automazione
+inclusa la scrittura (scartata: alto rischio + alto supporto per una domanda concentrata e piccola,
+coperta meglio da template + concierge, vedi decisione 3); confine read-only via system prompt
+(scartata: non è una garanzia, un prompt si aggira — dev'essere il motore a non esporre i tool).
+
+**Conseguenze**: la Tappa 10 si ridisegna a fasi A→D (vedi ROADMAP.md), con vincolo duro "non
+invertire C e D" (l'esecutore va validato su ≥10 automazioni scritte a mano dal founder prima di
+aprire la creazione al cliente). La riga "Automazioni" della tabella moduli in PROJECT.md diventa
+"Procedure". Nessun codice scritto in questa sessione: è design integrato nei documenti di governo,
+la costruzione parte quando si arriva alla Tappa 10 con `saas-module-builder`. L'esecutore
+deterministico è nuovo lavoro infrastrutturale non ancora esistente; le Attese vanno tenute
+distinte dagli `impegni` di Memoria (l'impegno è un fatto, l'Attesa una notifica programmata con
+scadenza).
