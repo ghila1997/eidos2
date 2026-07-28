@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Essere Vivente · anteprima</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /*
+    Versione ridotta del laboratorio: stato, palette, sfondo, audio. Tutte le
+    altre leve (transizioni, forma, cuore, effetti, volume/densità/dimensione,
+    reazione vocale) sono state tolte apposta, non solo nascoste — il
+    componente usa i suoi default interni per tutto il resto.
+  */
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{display:flex;flex-direction:column;background:#04040c;color:#eef1ff;
+    font-family:"Space Grotesk",system-ui,sans-serif}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 20px;font-size:13px;letter-spacing:.2em;text-transform:uppercase;
+    color:#9aa3c7;border-bottom:1px solid rgba(150,165,255,0.12)}
+  header b{color:#eef1ff}
+  header button{letter-spacing:normal;text-transform:none;background:rgba(0,0,0,.25)}
+  iframe{flex:1;border:0;width:100%;display:block;background:transparent}
+
+  /* sfondo condiviso dell'app (carta millimetrata + vignetta), replicato qui
+     per tarare l'essere sull'ambiente reale — originale in
+     interfaccia-base/app.js (initBackground) e style.css (.void) */
+  #bg{position:fixed;inset:0;z-index:0}
+  .void{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(160% 140% at 50% 42%, transparent 52%, rgba(0,0,0,0.45) 100%)}
+  header,iframe,.panel{position:relative;z-index:2}
+
+  /* il pannello GALLEGGIA sopra la scena (position:fixed) invece di stare nel
+     flusso: l'iframe tiene sempre tutta l'altezza e l'essere non si
+     rimpicciolisce quando i comandi crescono */
+  .panel{position:fixed;left:0;right:0;bottom:0;z-index:3;
+    display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;justify-content:center;
+    padding:16px 20px;border-top:1px solid rgba(150,165,255,0.12);
+    background:rgba(10,12,26,0.78);backdrop-filter:blur(6px)}
+  .panel[hidden]{display:none}
+  .section{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .sectionLabel{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#6b729c}
+  .group{display:flex;gap:6px;align-items:center;padding:4px;border-radius:12px;background:rgba(0,0,0,.25)}
+  button,select{font-family:inherit;font-weight:500;font-size:13px;color:#9aa3c7;border:0;
+    background:transparent;border-radius:9px;padding:8px 13px;cursor:pointer;transition:.2s}
+  button:hover{color:#eef1ff}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #8aa0ff;outline-offset:2px}
+  button.on{color:#06060f;background:linear-gradient(180deg,#fff,#cfd6ff)}
+  select{background:rgba(0,0,0,.25);color:#eef1ff;padding:8px 10px}
+  select option{background:#12142a}
+  label{font-size:12px;color:#9aa3c7;display:flex;gap:8px;align-items:center}
+  input[type=range]{width:130px;accent-color:#8aa0ff}
+  .val{font-variant-numeric:tabular-nums;min-width:34px;color:#eef1ff}
+  .hint{font-size:11px;color:#5b6290;max-width:220px;line-height:1.4}
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<div class="void"></div>
+
+<header>
+  <span>Essere Vivente — <b>anteprima</b></span>
+  <button id="panelToggle">Nascondi comandi</button>
+</header>
+
+<iframe id="ev" src="essere_vivente_component.html" title="Essere Vivente"></iframe>
+
+<div class="panel">
+
+  <div class="section">
+    <span class="sectionLabel">Stato</span>
+    <div class="group" id="states">
+      <button data-state="idle" class="on">Riposo</button>
+      <button data-state="listening">Ascolto</button>
+      <button data-state="thinking">Pensa</button>
+      <button data-state="speaking">Parla</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Palette</span>
+    <div class="group" id="palettes" style="flex-wrap:wrap;max-width:420px">
+      <button data-palette="mono">Mono</button>
+      <button data-palette="neutro">Neutro</button>
+      <button data-palette="complementare" class="on">Complementare</button>
+      <button data-palette="prisma">Prisma</button>
+      <button data-palette="ossidiana">Ossidiana</button>
+      <button data-palette="neonUrbano">Neon urbano</button>
+      <button data-palette="forestaBrace">Foresta e brace</button>
+      <button data-palette="acquamarina">Acquamarina</button>
+      <button data-palette="prismaIbrido">Prisma ibrido</button>
+      <button data-palette="nebulaOrione">Nebulosa Orione</button>
+      <button data-palette="nebulaCarena">Nebulosa Carena</button>
+      <button data-palette="nebulaVelo">Nebulosa Velo</button>
+      <button data-palette="nebulaCosmo">Nebulosa Cosmo</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Risalto sullo sfondo</span>
+    <div class="group" id="bgTweaks">
+      <button data-tweak="uniforme">Griglia uniforme</button>
+      <button data-tweak="tenue">Griglia più tenue</button>
+    </div>
+    <span class="hint">Interruttori combinabili a piacere (solo sfondo del lab: la
+      versione scelta va poi portata in interfaccia-base/app.js).</span>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Audio (per pilotare la reazione)</span>
+    <div class="group">
+      <select id="feed">
+        <option value="none">nessuno</option>
+        <option value="slider">manuale</option>
+        <option value="voice" selected>voce simulata</option>
+      </select>
+      <label id="sliderRow">Livello
+        <input type="range" id="lvl" min="0" max="100" value="50">
+        <span class="val" id="lvlVal">0.50</span>
+      </label>
+      <button id="pulse">Impulso parola</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const frame=document.getElementById('ev');
+  const send=msg=>frame.contentWindow.postMessage(msg,'*');
+
+  // stato: non persistito, si riparte sempre da riposo
+  const stateBtns=[...document.querySelectorAll('#states button')];
+  stateBtns.forEach(b=>b.addEventListener('click',()=>{
+    stateBtns.forEach(x=>x.classList.toggle('on',x===b));
+    send({type:'state',value:b.dataset.state});
+  }));
+
+  // palette: non persistita, si riparte sempre da "complementare" (default produzione)
+  const paletteBtns=[...document.querySelectorAll('#palettes button')];
+  paletteBtns.forEach(b=>b.addEventListener('click',()=>{
+    paletteBtns.forEach(x=>x.classList.toggle('on',x===b));
+    send({type:'config',palette:b.dataset.palette});
+  }));
+
+  // audio
+  document.getElementById('pulse').addEventListener('click',()=>send({type:'pulse'}));
+  const feed=document.getElementById('feed');
+  const lvl=document.getElementById('lvl');
+  const lvlVal=document.getElementById('lvlVal');
+  lvl.addEventListener('input',()=>{ lvlVal.textContent=(lvl.value/100).toFixed(2); });
+  lvlVal.textContent=(lvl.value/100).toFixed(2);
+
+  function voiceEnvelope(t){
+    const syl=Math.max(0,Math.sin(t*11.0));
+    const word=0.45+0.55*(0.5+0.5*Math.sin(t*1.9));
+    const pause=(Math.sin(t*0.55)>0.82)?0.18:1.0;
+    const v=(0.22+0.78*syl)*word*pause+(Math.random()-0.5)*0.05;
+    return Math.max(0,Math.min(1,v))*0.85;
+  }
+
+  // pannello comandi mostra/nascondi (galleggia sopra la scena, non la ridimensiona)
+  const panel=document.querySelector('.panel');
+  const panelToggle=document.getElementById('panelToggle');
+  panelToggle.addEventListener('click',()=>{
+    panel.hidden=!panel.hidden;
+    panelToggle.textContent=panel.hidden?'Mostra comandi':'Nascondi comandi';
+  });
+
+  // ---- prove di risalto: varianti di sfondo (combinabili) + luce dell'essere ----
+  const bgTweaks={uniforme:false,tenue:false};
+  let bgRerender=()=>{};
+  const tweakBtns=[...document.querySelectorAll('#bgTweaks button')];
+  tweakBtns.forEach(b=>b.addEventListener('click',()=>{
+    const k=b.dataset.tweak;
+    bgTweaks[k]=!bgTweaks[k];
+    b.classList.toggle('on',bgTweaks[k]);
+    bgRerender();
+  }));
+  // sfondo condiviso: stessa carta millimetrata dell'app (copia di
+  // initBackground in interfaccia-base/app.js — se cambia là, riallineare qui;
+  // in più rispetto all'app: le varianti bgTweaks per le prove di risalto)
+  (function initBackground(){
+    const cv=document.getElementById('bg');
+    if(!cv) return;
+    const ctx=cv.getContext('2d');
+    const reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+    let W,H,dpr=Math.min(window.devicePixelRatio||1,2);
+    let ox=0,oy=0,tox=0,toy=0,raf=0;
+    function rng(seed){ let s=seed; return ()=>{ s=(s*16807)%2147483647; return (s-1)/2147483646; }; }
+    function resize(){
+      cv.width=window.innerWidth*dpr; cv.height=window.innerHeight*dpr;
+      cv.style.width=window.innerWidth+'px'; cv.style.height=window.innerHeight+'px';
+      W=window.innerWidth; H=window.innerHeight;
+      render();
+    }
+    function render(){
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+      ctx.clearRect(0,0,W,H);
+      const CX=W/2, CY=H/2;
+      const step=30, shift=10;
+      const px=ox*shift, py=oy*shift;
+      const r=rng(5);
+      for(let x=0;x<=W+step;x+=step){
+        for(let y=0;y<=H+step;y+=step){
+          const d=Math.hypot(x-CX,y-CY)/(Math.max(W,H)*0.6);
+          const s=0.8+(1-Math.min(d,1))*0.6;
+          // base = sfondo reale dell'app: griglia uniforme con calo ai bordi
+          // (il buio attorno all'essere lo fa l'ombra dentro il componente) —
+          // tarato in essere_vivente_sfondo_lab.html. "uniforme" toglie
+          // anche il calo ai bordi
+          const e=Math.max(0,Math.min((d-0.5)/0.5,1));
+          const eF=1-0.55*e*e*(3-2*e);
+          let a=bgTweaks.uniforme?(0.12+r()*0.03):((0.16+r()*0.03)*eF*2.5);
+          if(bgTweaks.tenue) a*=0.6;
+          ctx.beginPath(); ctx.arc(x+px,y+py,s,0,7);
+          ctx.fillStyle='rgba(160,190,235,'+a.toFixed(3)+')';
+          ctx.fill();
+        }
+      }
+    }
+    bgRerender=render;
+    function easeStep(){
+      ox+=(tox-ox)*0.06; oy+=(toy-oy)*0.06;
+      render();
+      if(Math.abs(tox-ox)>0.001||Math.abs(toy-oy)>0.001) raf=requestAnimationFrame(easeStep);
+      else raf=0;
+    }
+    window.addEventListener('pointermove',e=>{
+      if(reduce) return;
+      tox=(e.clientX/window.innerWidth-0.5)*2;
+      toy=(e.clientY/window.innerHeight-0.5)*2;
+      if(!raf) raf=requestAnimationFrame(easeStep);
+    },{passive:true});
+    window.addEventListener('resize',resize);
+    resize();
+  })();
+
+  const t0=performance.now();
+  (function loop(){
+    const t=(performance.now()-t0)/1000;
+    if(feed.value==='slider'){
+      const v=lvl.value/100;
+      send({type:'level',value:v,bass:v*0.7,treble:v*0.4});
+    }else if(feed.value==='voice'){
+      const v=voiceEnvelope(t);
+      send({type:'level',value:v,bass:v*(0.5+0.4*Math.sin(t*2.3)),treble:v*(0.3+0.3*Math.abs(Math.sin(t*7.1)))});
+    }
+    requestAnimationFrame(loop);
+  })();
+})();
+</script>
+</body>
+</html>

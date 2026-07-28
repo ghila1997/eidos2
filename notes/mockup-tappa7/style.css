@@ -1,0 +1,150 @@
+/* Mockup interfaccia Eidos — identità visiva ripresa da export-interfaccia/style.css
+   (fondo quasi nero, vetro scuro, accento lavanda, Space Grotesk). Aggiunge il
+   comportamento NUOVO barra-trascrizione <-> cronologia unificata. Throwaway. */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap');
+
+:root{
+  --bg:#04040c; --text:#eef1ff; --text-secondary:#9aa3c7; --muted:#6b729c; --core:#ccd9ff;
+  --panel:rgba(18,20,42,0.46); --panel-border:rgba(150,165,255,0.12); --accent:#8aa0ff;
+  --glass:rgba(18,20,42,0.55); --glass-hi:rgba(30,34,66,0.72); --danger:#ff9a9a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none !important}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:'Space Grotesk',system-ui,sans-serif;overflow:hidden}
+
+button{font-family:inherit;font-weight:500;font-size:13px;color:var(--text-secondary);
+  border:0;background:transparent;border-radius:9px;padding:8px 13px;cursor:pointer;transition:.2s}
+button:hover{color:var(--text)}
+button.active{color:#06060f;background:linear-gradient(180deg,#fff,#cfd6ff)}
+input[type="text"]{font-family:inherit;font-size:14px;color:var(--text);
+  background:rgba(0,0,0,.25);border:1px solid var(--panel-border);border-radius:9px;padding:8px 12px}
+
+#bg{position:fixed;inset:0;z-index:0}
+.void{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(160% 140% at 50% 42%,transparent 52%,rgba(0,0,0,.45) 100%)}
+
+.brand-lockup{position:fixed;top:26px;left:30px;z-index:4}
+.brand-lockup .mark{font-weight:600;font-size:clamp(30px,4.6vw,38px);letter-spacing:.03em;line-height:.95;
+  background:linear-gradient(180deg,#fff,var(--core) 55%,var(--accent));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.brand-lockup .acr{margin-top:7px;font-size:10px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--muted);max-width:300px}
+.brand-lockup .acr b{color:var(--accent);font-weight:600}
+
+.mock-badge{position:fixed;top:26px;right:16px;z-index:8;font-family:'Space Mono',monospace;
+  font-size:10px;letter-spacing:.08em;color:var(--muted);border:1px solid var(--panel-border);
+  border-radius:8px;padding:6px 10px;background:var(--panel);backdrop-filter:blur(6px)}
+
+/* essere vivente a piena schermata, dietro tutto */
+#essere-wrap{position:absolute;inset:0;z-index:1;transition:filter .4s,opacity .4s}
+#essere{width:100%;height:100%;border:0;background:transparent}
+body.convo-open #essere-wrap{filter:blur(3px);opacity:.55}
+
+/* ---------- barra <-> cronologia unificata (il pezzo nuovo) ---------- */
+#convo{position:absolute;left:50%;top:7vh;transform:translateX(-50%);
+  width:min(92vw,620px);z-index:6;display:flex;flex-direction:column;align-items:center}
+#convo-toggle{position:absolute;top:-6px;right:-2px;width:30px;height:30px;padding:0;
+  border-radius:50%;color:var(--muted);font-size:13px;line-height:1;opacity:.6;transition:.25s}
+#convo-toggle:hover{opacity:1;color:var(--text);background:var(--panel)}
+#convo.open #convo-toggle .chev{display:inline-block;transform:rotate(180deg)}
+
+#transcript-bar{width:90%;text-align:center;font-family:'Space Mono',ui-monospace,monospace;
+  font-size:13.5px;letter-spacing:.01em;color:rgba(238,241,255,.55);min-height:1.4em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .6s;cursor:pointer}
+#transcript-bar .ghost{color:var(--muted)}
+#transcript-bar.final{color:rgba(238,241,255,.72)}
+#convo.open #transcript-bar{display:none}
+
+/* via di mezzo: fondo vetro leggibile ma bordi che si dissolvono (mask), niente cornice netta */
+#history-scroll{display:none;width:100%;max-height:60vh;overflow-y:auto;margin-top:6px;
+  padding:26px 18px;background:rgba(12,14,32,.55);border:0;border-radius:16px;
+  backdrop-filter:blur(12px);box-shadow:none;
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 88%,transparent);
+  mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 88%,transparent)}
+#convo.open #history-scroll{display:block}
+.turn{padding:9px 0;line-height:1.5;font-size:13.5px;border-bottom:1px solid rgba(150,165,255,.07)}
+.turn:last-child{border-bottom:0}
+.turn .who{display:block;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  margin-bottom:3px;color:var(--muted)}
+.turn.user .who{color:var(--accent)}
+.turn.user{color:var(--text)}
+.turn.assistant{color:var(--text-secondary)}
+#history-scroll::-webkit-scrollbar{width:7px}
+#history-scroll::-webkit-scrollbar-thumb{background:rgba(150,165,255,.18);border-radius:4px}
+
+/* ---------- schede grafiche flottanti ---------- */
+#cards{position:fixed;inset:0;z-index:3;pointer-events:none}
+.card{pointer-events:auto;position:absolute;display:flex;flex-direction:column;width:fit-content;
+  min-width:170px;max-width:320px;max-height:56vh;background:rgba(18,20,42,.72);
+  border:1px solid var(--panel-border);border-radius:14px;padding:12px 14px;backdrop-filter:blur(12px);
+  box-shadow:0 18px 50px -20px rgba(0,0,0,.7);
+  animation:cardin .34s cubic-bezier(.2,.9,.25,1) both}
+@keyframes cardin{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:8px;cursor:move}
+.card-kind{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+.card-close{padding:0 4px;font-size:16px;color:var(--muted);background:none}
+.card-close:hover{color:var(--text)}
+.card-body{overflow:auto}
+.card-list{list-style:none;display:flex;flex-direction:column;gap:8px}
+.card-list li{display:flex;gap:9px;font-size:13px;color:var(--text-secondary);line-height:1.35}
+.card-list li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);
+  flex:0 0 auto;margin-top:6px}
+.card-list li b{color:var(--text);font-weight:500}
+.card-event{display:flex;gap:12px;align-items:center}
+.card-event .date{display:flex;flex-direction:column;align-items:center;min-width:48px;padding:7px 8px;
+  border:1px solid var(--panel-border);border-radius:10px;background:rgba(0,0,0,.25)}
+.card-event .date .d{font-size:18px;font-weight:600;color:var(--text);line-height:1}
+.card-event .date .m{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-top:2px}
+.card-event .info{font-size:13px;color:var(--text-secondary)}
+.card-event .info b{display:block;color:var(--text);font-weight:500;margin-bottom:3px}
+
+/* ---------- log azioni ---------- */
+#actions-log{position:absolute;left:50%;top:42vh;bottom:120px;transform:translateX(-50%);
+  width:min(90vw,520px);display:flex;flex-direction:column;justify-content:flex-end;gap:3px;
+  overflow:hidden;font-size:12px;z-index:3;
+  -webkit-mask-image:linear-gradient(to top,#000 55%,transparent 100%);
+  mask-image:linear-gradient(to top,#000 55%,transparent 100%)}
+.log-row{padding:2px 0;color:var(--text-secondary);animation:logfade .4s both}
+.log-row .tick{color:var(--accent);margin-right:7px}
+.log-row.done .tick{color:#7fe8b0}
+@keyframes logfade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---------- conferma ---------- */
+#confirm-box{position:absolute;left:50%;bottom:190px;transform:translateX(-50%);
+  width:min(92vw,460px);background:var(--panel);border:1px solid var(--panel-border);
+  border-radius:14px;padding:16px 18px;z-index:7;display:flex;flex-direction:column;gap:12px;
+  backdrop-filter:blur(12px);box-shadow:0 20px 60px -22px rgba(0,0,0,.8);
+  animation:cardin .3s both}
+.confirm-kind{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+#confirm-message{font-size:13.5px;line-height:1.5;color:var(--text-secondary);white-space:pre-wrap}
+#confirm-message b{color:var(--text);font-weight:500}
+.confirm-actions{display:flex;gap:10px;justify-content:flex-end}
+
+/* ---------- controlli ---------- */
+#controls{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);width:min(92vw,560px);
+  display:flex;align-items:center;gap:10px;z-index:5;background:var(--panel);
+  border:1px solid var(--panel-border);border-radius:20px;padding:10px 16px;backdrop-filter:blur(10px)}
+#mic-button{font-size:20px;border-radius:50%;width:44px;height:44px;flex:0 0 auto;
+  background:rgba(0,0,0,.25);opacity:.5}
+#text-form{display:flex;gap:6px;flex:1;min-width:0}
+#text-form input{flex:1;min-width:0}
+#text-form button{flex:0 0 auto}
+button.enter{font-weight:600;letter-spacing:.04em;color:#06060f;
+  background:linear-gradient(180deg,#fff,#cfd6ff);border-radius:11px;padding:10px 18px}
+button.enter:hover{color:#06060f;transform:translateY(-1px)}
+#text-form button[type="submit"]{color:#06060f;background:linear-gradient(180deg,#fff,#cfd6ff);border-radius:11px}
+
+#mode-switch{position:absolute;right:16px;bottom:24px;z-index:5;display:flex;gap:4px;
+  background:var(--panel);border:1px solid var(--panel-border);border-radius:12px;padding:4px}
+
+#usage{position:absolute;left:16px;bottom:22px;width:190px;z-index:3;opacity:.85}
+.usage-label{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.usage-amount{font-size:17px;font-weight:500;color:var(--text);margin-bottom:9px}
+.usage-amount .of{font-size:12px;font-weight:400;color:var(--muted)}
+.usage-bar{height:6px;border-radius:5px;background:rgba(150,165,255,.1);overflow:hidden}
+.usage-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--accent),#7fe8ff);
+  box-shadow:0 0 12px -2px var(--accent)}
+
+body[data-mode="spenta"] #mic-button{opacity:.25}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}

@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Essere Vivente</title>
+<style>
+  /*
+    Componente di produzione dell'Essere Vivente (ADR 030: promosso dal
+    laboratorio equilibrio). Solo presentazione: riceve stati e livello audio
+    via postMessage (type: state/level/pulse/config) e anima. Le leve di
+    taratura (type:'lab') restano attive per il pannello
+    essere_vivente_lab.html, che pilota questo stesso file.
+  */
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:transparent}
+  @supports (height:100dvh){ html,body{height:100dvh} }
+
+  /* niente sfondo/alone dipinto: il vuoto dietro è l'ambiente di lavoro reale
+     dietro l'iframe, non un colore dipinto qui dentro. Nessuna ombra/luce
+     propria: il componente non modula più l'ambiente attorno a sé. */
+  #scene{position:fixed;inset:0;display:block;width:100%;height:100%;z-index:1;cursor:grab}
+  #scene.grabbing{cursor:grabbing}
+</style>
+</head>
+<body class="state-idle">
+
+<canvas id="scene"></canvas>
+
+<script src="vendor/three.min.js"></script>
+<script>
+(function(){
+  const reduced = window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const isCoarse = window.matchMedia('(pointer:coarse)').matches;
+  const canvas = document.getElementById('scene');
+
+  const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const scene  = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
+  camera.position.set(0, 0.4, 17);
+  const group  = new THREE.Group();
+  scene.add(group);
+
+  const GX = 300, GZ = 175;
+  const N  = GX * GZ;
+
+  // ---------- forma a VENE RADIALI: nascono dal nucleo e disegnano la superficie ----------
+  // Le vene partono dal centro, serpeggiano verso un bersaglio sulla superficie del blob
+  // (stessa formula "blob" di sempre) e si ramificano; le punte disegnano il guscio -> la
+  // sagoma e' fatta dalle vene, non da una sfera preesistente tinta di venature.
+  // Tre gruppi di particelle sommati, mai in competizione tra loro (ognuna nasce gia'
+  // assegnata al suo gruppo, per percentile aCoreRand): vene, nucleo (denso, dedicato),
+  // membrana (silhouette netta nei movimenti). Nessuna leva 'lab' su questi parametri:
+  // valori confermati, fissi in produzione. Dettagli e alternative scartate in
+  // docs/superpowers/specs/2026-07-23-struttura-vene-radiali-essere-vivente-design.md
+  const R_FORM=6.3;
+  const GEO={veins:38, branch:0.55, thick:0.5, coreCount:35000, coreR:2.0, shellCount:24000};
+  function blobR(th,ph){
+    return R_FORM*(1
+      +0.16*Math.sin(3*th+1.1)*Math.cos(2*ph-0.4)
+      +0.09*Math.sin(2*th-2*ph+0.6)
+      +0.05*Math.sin(5*ph+2*th));
+  }
+  function buildShapes(){
+    const NC=Math.max(0,Math.round(GEO.coreCount)); // nucleo: aggiunte, non rubate alle vene
+    const NS=Math.max(0,Math.round(GEO.shellCount)); // membrana di superficie: idem
+    const NT=N+NC+NS;
+    const position=new Float32Array(NT*3),
+          scale=new Float32Array(NT), phase=new Float32Array(NT),
+          rand=new Float32Array(NT), coreRand=new Float32Array(NT);
+    function h(a,b,c){ const s=Math.sin(a*127.1+b*311.7+c*74.7)*43758.5453; return s-Math.floor(s); }
+
+    // scheletro delle vene: nodi piatti [x,y,z, tt(0=cuore,1=punta), w(spessore)]
+    const skel=[];
+    function grow(x,y,z, tx,ty,tz, depth, seed){
+      const steps = depth===0?22:14;
+      for(let s=0;s<steps;s++){
+        let dx=tx-x, dy=ty-y, dz=tz-z; let dl=Math.hypot(dx,dy,dz);
+        if(dl<0.05) break;
+        dx/=dl;dy/=dl;dz/=dl;
+        const tt0=s/steps;
+        const wob=0.75*(1-tt0); // serpeggia vicino al cuore, si raddrizza verso la punta
+        dx+=(h(seed,s,1)-0.5)*wob; dy+=(h(seed,s,2)-0.5)*wob; dz+=(h(seed,s,3)-0.5)*wob;
+        const dl2=Math.hypot(dx,dy,dz)||1; dx/=dl2;dy/=dl2;dz/=dl2;
+        const step=dl/(steps-s); // copre la distanza rimasta fino al bersaglio
+        x+=dx*step; y+=dy*step; z+=dz*step;
+        const tt=(s+1)/steps;
+        const w=GEO.thick*(0.18+0.82*(1-tt))*(depth===0?1.0:0.62);
+        skel.push(x,y,z,tt,w);
+        // biforcazione: un ramo figlio verso un altro punto vicino della superficie
+        if(depth<2 && s>steps*0.35 && s<steps*0.9 && h(seed,s,7)<GEO.branch*0.28){
+          const rr=Math.hypot(x,y,z)||0.0001;
+          let cx=x/rr+(h(seed,s,11)-0.5)*0.8, cy=y/rr+(h(seed,s,12)-0.5)*0.8, cz=z/rr+(h(seed,s,13)-0.5)*0.8;
+          const cl=Math.hypot(cx,cy,cz)||1; cx/=cl;cy/=cl;cz/=cl;
+          const cph=Math.acos(Math.max(-1,Math.min(1,cy))), cth=Math.atan2(cz,cx);
+          const cR=blobR(cth,cph);
+          grow(x,y,z, cx*cR, cy*cR, cz*cR, depth+1, seed*1.7+s+depth*31.7);
+        }
+      }
+    }
+    // vene primarie: direzioni distribuite uniformi (fibonacci) -> bersagli sul guscio
+    const NV=Math.max(6,Math.round(GEO.veins)), ga=Math.PI*(3-Math.sqrt(5));
+    for(let i=0;i<NV;i++){
+      const yy=1-(i/(NV-1))*2, rr=Math.sqrt(Math.max(0,1-yy*yy)), a=ga*i;
+      const ux=Math.cos(a)*rr, uy=yy, uz=Math.sin(a)*rr;
+      const ph=Math.acos(Math.max(-1,Math.min(1,uy))), th=Math.atan2(uz,ux);
+      const cR=blobR(th,ph);
+      grow(0,0,0, ux*cR, uy*cR, uz*cR, 0, i*7.3+2.1);
+    }
+
+    const M=skel.length/5;
+    for(let i=0;i<N;i++){
+      const i3=i*3;
+      scale[i]=0.5+Math.random()*1.4; phase[i]=Math.random()*Math.PI*2; rand[i]=Math.random();
+      coreRand[i]=0.25+Math.random()*0.75; // mai reclutata dal nucleo: resta sulle vene
+
+      // nodo casuale, con leggera preferenza per i nodi esterni (tt alto) così le
+      // punte coprono bene la superficie e la sagoma tonda resta leggibile
+      let k=(Math.random()*M)|0;
+      const k2=(Math.random()*M)|0; if(skel[k2*5+3]>skel[k*5+3]) k=k2;
+      const nx=skel[k*5], ny=skel[k*5+1], nz=skel[k*5+2], w=skel[k*5+4];
+      // offset perpendicolare alla direzione radiale -> spessore a sezione tonda
+      const rr=Math.hypot(nx,ny,nz)||0.0001; const ux=nx/rr,uy=ny/rr,uz=nz/rr;
+      let ex=Math.random()-0.5, ey=Math.random()-0.5, ez=Math.random()-0.5;
+      const dot=ex*ux+ey*uy+ez*uz; ex-=ux*dot; ey-=uy*dot; ez-=uz*dot;
+      const el=Math.hypot(ex,ey,ez)||1; ex/=el;ey/=el;ez/=el;
+      const rad=Math.sqrt(Math.random())*w;
+      position[i3]=nx+ex*rad; position[i3+1]=ny+ey*rad; position[i3+2]=nz+ez*rad;
+    }
+
+    // --- NUCLEO: particelle DEDICATE, aggiunte OLTRE a quelle delle vene ---
+    // coreRand basso -> sempre reclutate dal nucleo (uCoreSize~0.18), mentre le vene
+    // (coreRand>=0.25) non ne perdono nessuna. Più coreCount = cuore più fitto e denso,
+    // indipendentemente da quante particelle hanno le vene.
+    for(let j=0;j<NC;j++){
+      const i=N+j, i3=i*3;
+      scale[i]=0.6+Math.random()*1.1; phase[i]=Math.random()*Math.PI*2; rand[i]=Math.random();
+      coreRand[i]=Math.random()*0.12;
+      const u=Math.random(), v=Math.random(); const th=2*Math.PI*u, ph=Math.acos(1-2*v);
+      const rr=GEO.coreR*Math.cbrt(Math.random()); // denso verso il centro
+      position[i3]=rr*Math.sin(ph)*Math.cos(th); position[i3+1]=rr*Math.cos(ph); position[i3+2]=rr*Math.sin(ph)*Math.sin(th);
+    }
+
+    // --- MEMBRANA: particelle sulla SUPERFICIE del blob (aggiunte) ---
+    // ridà la silhouette netta nei movimenti/rotazioni, che con le sole vene (più rade
+    // sulla superficie) si perdeva. Mai reclutata dal nucleo.
+    for(let j=0;j<NS;j++){
+      const i=N+NC+j, i3=i*3;
+      scale[i]=0.5+Math.random()*1.2; phase[i]=Math.random()*Math.PI*2; rand[i]=Math.random();
+      coreRand[i]=0.25+Math.random()*0.75;
+      const u=Math.random(), v=Math.random(); const th=2*Math.PI*u, ph=Math.acos(1-2*v);
+      const Rb=blobR(th,ph)*(0.9+0.1*Math.random());
+      const jx=(Math.random()-0.5)*0.12, jy=(Math.random()-0.5)*0.12, jz=(Math.random()-0.5)*0.12;
+      position[i3]=Rb*Math.sin(ph)*Math.cos(th)+jx; position[i3+1]=Rb*Math.cos(ph)+jy; position[i3+2]=Rb*Math.sin(ph)*Math.sin(th)+jz;
+    }
+    return {position,scale,phase,rand,coreRand};
+  }
+  const S = buildShapes();
+
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(S.position,3));
+  geo.setAttribute('aScale',   new THREE.BufferAttribute(S.scale,1));
+  geo.setAttribute('aPhase',   new THREE.BufferAttribute(S.phase,1));
+  geo.setAttribute('aRand',    new THREE.BufferAttribute(S.rand,1));
+  geo.setAttribute('aCoreRand',new THREE.BufferAttribute(S.coreRand,1));
+
+  // valori di partenza = palette complementare/riposo reale (niente più flash
+  // di colore sbagliato nei primi secondi mentre il lerp lo corregge)
+  const cIn=new THREE.Color(1.30,0.55,0.15), cMid=new THREE.Color(0.55,0.35,0.60),
+        cOut=new THREE.Color(0.10,0.30,0.65), cCore=new THREE.Color(1.60,0.85,0.35);
+
+  const uniforms = {
+    uTime:{value:0}, uSize:{value:3.8}, uDist:{value:17},
+    uRipAmp:{value:0}, uRipR:{value:0},
+    uFlow:{value:0.5}, uLevel:{value:0}, uReact:{value:0}, uBreath:{value:0},
+    uHeart:{value:0}, uHeartAmt:{value:0.5}, uHeartBoost:{value:1.0}, uHeartGlow:{value:0}, uCoreSize:{value:0.18}, uCoreGlowR:{value:0.975}, uCorePull:{value:0.5}, uEmit:{value:0}, uDrive:{value:0}, uStateScale:{value:1}, uWord:{value:0}, uBass:{value:0}, uTreble:{value:0},
+    uDensity:{value:1.0}, uSizeBoost:{value:0.5}, uBrightness:{value:0.4}, uVeinGain:{value:0.70},
+    uReactMode:{value:0}, uZoom:{value:1.0},
+    uCIn:{value:cIn}, uCMid:{value:cMid}, uCOut:{value:cOut}, uCCore:{value:cCore},
+    // venature (caldo/freddo per-particella): prima costanti fisse nello shader,
+    // ora leva per-palette (vedi PALETTES[..].vein) cosi' anche la "trama"
+    // dell'entita' cambia carattere, non solo i 4 colori di stato
+    uVeinIn:{value:new THREE.Color(1.0,0.84,0.50)}, uVeinMid:{value:new THREE.Color(0.55,0.35,0.95)},
+    uVeinOut:{value:new THREE.Color(0.18,0.22,0.60)}, uVeinCore:{value:new THREE.Color(1.0,0.92,0.78)},
+    uVeinMode:{value:0},
+    // solo per uVeinMode=1 (iridescente): vedi PALETTES[..].vein.hueOffset/noiseScale/sat/speed
+    uVeinHueOffset:{value:0}, uVeinNoiseScale:{value:0.6}, uVeinSat:{value:0.70}, uVeinSpeed:{value:0.03},
+  };
+
+  const mat=new THREE.ShaderMaterial({
+    uniforms, transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+    vertexShader:`
+      attribute float aScale; attribute float aPhase; attribute float aRand; attribute float aCoreRand;
+      uniform float uTime,uSize,uDist,uFlow,uLevel,uReact,uBreath,uHeart,uHeartAmt,uHeartBoost,uHeartGlow,uCorePull,uEmit,uDrive,uStateScale,uWord,uBass,uTreble,uRipAmp,uRipR,uCoreSize,uCoreGlowR,uDensity,uSizeBoost,uBrightness,uReactMode,uZoom,uVeinGain,uVeinMode,uVeinHueOffset,uVeinNoiseScale,uVeinSat,uVeinSpeed;
+      uniform vec3 uCIn,uCMid,uCOut,uCCore,uVeinIn,uVeinMid,uVeinOut,uVeinCore;
+      varying vec3 vColor; varying float vAlpha;
+
+      vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x,289.0);}
+      vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+      float snoise(vec3 v){
+        const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+        vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+        vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+        vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy; i=mod(i,289.0);
+        vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+        float n_=1.0/7.0; vec3 ns=n_*D.wyz-D.xzx;
+        vec4 j=p-49.0*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+        vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+        vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+        vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+        vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+        vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+        vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+        p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+        vec4 mn=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); mn=mn*mn;
+        return 42.0*dot(mn*mn,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+      }
+      vec3 snoiseVec3(vec3 x){return vec3(snoise(x),snoise(x+vec3(123.4,234.5,345.6)),snoise(x+vec3(-345.6,-234.5,-123.4)));}
+      vec3 hsv2rgb(vec3 c){
+        vec4 K=vec4(1.0,2.0/3.0,1.0/3.0,3.0);
+        vec3 p=abs(fract(c.xxx+K.xyz)*6.0-K.www);
+        return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);
+      }
+      vec3 curl(vec3 p){
+        const float e=0.12; vec3 dx=vec3(e,0.,0.),dy=vec3(0.,e,0.),dz=vec3(0.,0.,e);
+        vec3 px0=snoiseVec3(p-dx),px1=snoiseVec3(p+dx),py0=snoiseVec3(p-dy),py1=snoiseVec3(p+dy),pz0=snoiseVec3(p-dz),pz1=snoiseVec3(p+dz);
+        float x=(py1.z-py0.z)-(pz1.y-pz0.y); float y=(pz1.x-pz0.x)-(px1.z-px0.z); float z=(px1.y-px0.y)-(py1.x-py0.x);
+        return vec3(x,y,z)/(2.0*e);
+      }
+
+      void main(){
+        vec3 pos=position;
+
+        float rxz=length(pos.xz);
+        float tw2=sin(uTime*0.22+aPhase*0.4)*0.9/(0.6+rxz*0.18);
+        float ca=cos(tw2),sa=sin(tw2); pos.xz=mat2(ca,-sa,sa,ca)*pos.xz;
+
+        pos*=(1.0+uBreath)*uStateScale;
+
+        // percentile: le particelle con aCoreRand basso entrano nel nucleo. uCoreSize
+        // (leva live) decide quante -> dimensione/densità del cuore senza rebuild geometria
+        float coreW=1.0-smoothstep(uCoreSize-0.06,uCoreSize+0.06,aCoreRand);
+        vec3 hp=normalize(pos+vec3(aRand-0.5,aRand*0.7-0.35,0.5-aRand))*(0.8+aRand*2.1);
+        pos=mix(pos,hp,coreW*0.96);
+
+        vec3 flow=curl(pos*0.16+vec3(0.0,uTime*0.06,uTime*0.04));
+        pos+=flow*(uFlow+uLevel*0.6);
+
+        float r=length(pos); vec3 dir=r>0.0001?pos/r:vec3(0.0);
+        // uHeartBoost > 1 allarga il raggio d'azione del battito, non solo il centro
+        float nearCore=exp(-r*(0.34/(0.55+0.45*uHeartBoost)));
+        pos+=dir*uHeart*uHeartAmt*uHeartBoost*(0.5+2.4*nearCore);
+        pos-=dir*uCorePull*nearCore*1.4;
+        pos+=dir*uBass*nearCore*1.4;
+
+        float ripple=snoise(pos*0.5+uTime*0.6);
+        pos+=dir*uDrive*uReact*(0.6+0.4*ripple);
+
+        // reazione vocale di "parla": 4 alternative selezionabili (uReactMode),
+        // tutte guidate dagli stessi ingressi (uDrive=energia continua, uWord=
+        // impulso di parola) ma con geometria di spostamento diversa
+        if(uReactMode<0.5){
+          // 0 - ONDA ORIGINALE: guscio concentrico che attraversa tutto il corpo
+          float ring=sin(r*1.4-uTime*5.0);
+          pos+=dir*uEmit*uDrive*(0.5+0.7*ring)*1.05;
+          pos+=dir*uEmit*uWord*0.9;
+        } else if(uReactMode<1.5){
+          // 1 - TURBOLENZA ORGANICA: stesso campo di flusso (curl noise) che
+          // deforma i filamenti, solo piu' intenso -> nessuna simmetria radiale,
+          // si muove come corrente/fumo, non come onda che si espande
+          pos+=flow*uEmit*uDrive*1.3;
+          pos+=flow*uEmit*uWord*1.1;
+        } else if(uReactMode<2.5){
+          // 2 - PULSAZIONE INTERNA: la spinta resta vicino al nucleo (nearCore,
+          // gia' calcolato sopra per il battito) invece di propagarsi come
+          // guscio su tutta la superficie -> si legge come un respiro/battito
+          // interno, il bordo esterno resta calmo
+          pos+=dir*uEmit*uDrive*nearCore*2.0;
+          pos+=dir*uEmit*uWord*nearCore*1.6;
+        } else {
+          // 3 - VIBRAZIONE LOCALE: ogni particella si sposta lungo una direzione
+          // propria (da aRand), non lungo il raggio -> shimmer/vibrazione diffusa,
+          // nessun movimento coerente su larga scala, ne' radiale ne' a corrente
+          vec3 jitterDir=normalize(vec3(aRand-0.5, fract(aRand*37.0)-0.5, fract(aRand*91.0)-0.5)+0.0001);
+          pos+=jitterDir*uEmit*uDrive*aRand*0.9;
+          pos+=jitterDir*uEmit*uWord*aRand*0.7;
+        }
+
+        // onda-pensiero: cerchi calmi durante "pensa"
+        float ripband=exp(-pow((r-uRipR)*1.1,2.0));
+        pos+=dir*uRipAmp*ripband*1.1;
+
+        // profondità reale rispetto alla camera, calcolata ORA (dopo tutte le
+        // deformazioni) cosi' fronte/retro dipendono da dove sta l'osservatore,
+        // non da dove sta la particella nell'oggetto -> sopravvive alla somma
+        // additiva ed e' coerente su tutta la nuvola alla stessa profondita'
+        vec4 mv=modelViewMatrix*vec4(pos,1.0);
+        float depthSpread=8.0;
+        float closeness=clamp(((mv.z+uDist)/depthSpread)*0.5+0.5,0.0,1.0);
+
+        // caldo/freddo per-particella, agganciato allo stesso campo di rumore
+        // che deforma i filamenti (stessa scala 0.16 del flow curl) -> il
+        // colore segue le venature vere dell'entità, non una tinta uniforme.
+        // Un respiro condiviso lento (~25s) tiene comunque le venature in fase
+        // tra loro invece di sembrare statiche/casuali.
+        // due ottave (una larga tipo il flusso, una più fine) invece di una
+        // sola -> vene sottili leggibili, non un'unica sfumatura morbida
+        float warmNoiseRaw=snoise(pos*0.16+vec3(0.0,uTime*0.05,uTime*0.035))*0.6
+                       +snoise(pos*0.42+vec3(0.0,uTime*0.07,-uTime*0.05))*0.4;
+        float warmNoise=warmNoiseRaw*0.5+0.5;
+        // contrasto: spinge verso gli estremi invece di una transizione morbida,
+        // così si legge come "vena" invece che come velo uniforme
+        warmNoise=smoothstep(0.38,0.62,warmNoise);
+        float warmBreath=0.5+0.5*sin(uTime*0.25);
+        float warmK=clamp(warmNoise*0.95+warmBreath*0.20-0.075,0.0,1.0);
+        // venature: uVeinMode 0 = mescola fra due colori fissi (comportamento
+        // originale, guidato dal palette selezionato); uVeinMode 1 = la tinta
+        // ruota nello spettro seguendo lo stesso rumore (effetto madreperla/
+        // iridescente, usato dalla palette "prisma") invece di restare fra
+        // due estremi fissi
+        vec3 cInW,cMidW,cOutW,cCoreW;
+        if(uVeinMode<0.5){
+          cInW=mix(uCIn,uVeinIn,warmK); cMidW=mix(uCMid,uVeinMid,warmK);
+          cOutW=mix(uCOut,uVeinOut,warmK); cCoreW=mix(uCCore,uVeinCore,warmK);
+        } else {
+          // uVeinNoiseScale: quanto il rumore fa girare la tinta -> banda stretta
+          // (poche tinte vicine, es. "acquamarina") o spettro pieno ("prisma").
+          // uVeinHueOffset sposta la banda sulla ruota, uVeinSpeed la velocità
+          // di rotazione nel tempo, uVeinSat la saturazione dell'iridescenza
+          vec3 iri=hsv2rgb(vec3(fract(uVeinHueOffset+warmNoiseRaw*uVeinNoiseScale+uTime*uVeinSpeed),uVeinSat,1.0));
+          cInW=mix(uCIn,iri*1.3,0.55); cMidW=mix(uCMid,iri*0.9,0.55);
+          cOutW=mix(uCOut,iri*0.55,0.55); cCoreW=mix(uCCore,iri*1.4,0.35);
+        }
+
+        float t=clamp(length(pos.xz)/9.0,0.0,1.0);
+        vec3 col=t<0.5?mix(cInW,cMidW,t*2.0):mix(cMidW,cOutW,(t-0.5)*2.0);
+        col+=(0.10+uLevel*0.45)*sin(uTime*0.4+aRand*6.2831);
+        float coreGlow=exp(-r*uCoreGlowR); // raggio del bagliore centrale (leva "nucleo")
+        col+=cCoreW*(coreGlow*0.55+coreW*0.35);
+        col+=cCoreW*ripband*uRipAmp*0.45;
+        float rim=smoothstep(0.35,1.0,t);
+        float sparkle=0.5+0.5*sin(uTime*9.0+aRand*40.0);
+        col+=mix(cMidW,vec3(0.75,0.92,1.0),0.5)*uTreble*rim*sparkle*1.2;
+
+        // contrasto di luminosità sulla stessa vena (non solo tinta): la
+        // differenza di luce regge meglio della sola differenza di colore
+        // quando tante particelle si sommano in additivo
+        col*=mix(0.62,1.48,warmK); // contrasto più marcato: vena accesa vs corpo scuro
+
+        // fronte (vicino alla camera) più luminoso, retro più scuro e freddo:
+        // legato a "closeness" (profondità reale), non alla direzione locale
+        col*=mix(0.55,1.35,closeness);
+        col=mix(col*vec3(0.82,0.88,1.10),col,closeness);
+
+        col*=1.0+uLevel*0.25;
+        // bagliore lento: si accende in fretta e si spegne a rallentatore (uHeartGlow
+        // è già una rampa smussata calcolata in JS, non il battito grezzo)
+        col*=1.0+uHeartGlow*0.35;
+        col*=1.0+uVeinGain*(1.0-coreW)*0.85; // vene più visibili (non tocca il nucleo)
+        col*=uBrightness;
+        col=col/(1.0+0.45*col);
+        vColor=col;
+
+        float tw=0.55+0.45*sin(uTime*2.1+aPhase*6.2831);
+        // il retro si dirada verso il vuoto invece di restare pieno come il fronte
+        vAlpha=tw*(0.7+uLevel*0.4)*(0.85+coreGlow*0.45+coreW*0.30)*mix(0.30,1.10,closeness)*(1.0+uVeinGain*(1.0-coreW)*0.35);
+
+        gl_Position=projectionMatrix*mv;
+        // caduta di dimensione esagerata oltre la prospettiva reale: rinforza il fronte/retro.
+        // uZoom: i punti scalano con lo zoom del group, altrimenti a zoom basso
+        // restano grandi su un volume piccolo e si "compattano"
+        float sizeFinal=uSize*uSizeBoost*uZoom*aScale*(0.55+0.5*tw)*(1.0+uLevel*0.22)*(1.0+coreGlow*0.35+coreW*0.30)*(1.0+uTreble*rim*sparkle*0.6)*(1.0+uVeinGain*(1.0-coreW)*0.55)*pow(uDist/-mv.z,1.6);
+        // densità live: le particelle scartate (aRand oltre la soglia) diventano invisibili
+        // (punto a dimensione zero), senza dover ricostruire i buffer della geometria
+        gl_PointSize=sizeFinal*step(aRand,uDensity);
+      }
+    `,
+    fragmentShader:`
+      varying vec3 vColor; varying float vAlpha;
+      void main(){
+        float d=length(gl_PointCoord-0.5);
+        float a=smoothstep(0.5,0.30,d);
+        gl_FragColor=vec4(vColor,a*vAlpha*0.75);
+      }
+    `,
+  });
+
+  const points=new THREE.Points(geo,mat); points.frustumCulled=false; group.add(points);
+
+  let coreSprite;
+  (function coreGlowSprite(){
+    const c=document.createElement('canvas'); c.width=c.height=256;
+    const x=c.getContext('2d');
+    const g=x.createRadialGradient(128,128,0,128,128,128);
+    g.addColorStop(0,'rgba(255,255,255,0.95)');
+    g.addColorStop(0.25,'rgba(255,235,205,0.55)');
+    g.addColorStop(0.55,'rgba(180,150,255,0.20)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=g; x.fillRect(0,0,256,256);
+    const tex=new THREE.CanvasTexture(c);
+    const m=new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,opacity:0.6});
+    coreSprite=new THREE.Sprite(m); coreSprite.scale.set(4,4,4); coreSprite.frustumCulled=false;
+    group.add(coreSprite);
+  })();
+
+  // posizione verticale di default confermata nel lab (0.19 = essere alzato);
+  // un host che manda {type:'lab', offsetY} la sovrascrive (es. ESSERE_OFFSET_Y)
+  const OFFY_DEFAULT=0.19;
+  group.position.y=OFFY_DEFAULT*10.5;
+
+  let dragging=false,px=0,py=0,sx=0,sy=0;
+  let targRY=0,targRX=0.2,curRY=0,curRX=0.2,mx=0,my=0;
+  // tumbling libero (nessun asse privilegiato): ruota attorno a un asse che
+  // vaga lentamente nello spazio, non attorno a X/Y separati
+  const tumbleAxis=new THREE.Vector3(0,1,0);
+  const tumbleQuat=new THREE.Quaternion();
+  function vp(){const v=window.visualViewport;return{w:Math.round(v?v.width:innerWidth),h:Math.round(v?v.height:innerHeight)};}
+  function down(x,y){dragging=true;px=x;py=y;sx=x;sy=y;canvas.classList.add('grabbing');}
+  function move(x,y){
+    if(dragging){targRY+=(x-px)*0.005;targRX+=(y-py)*0.005;targRX=Math.max(-1.0,Math.min(1.0,targRX));px=x;py=y;}
+    const s=vp();mx=(x/s.w)*2-1;my=(y/s.h)*2-1;
+  }
+  function up(){dragging=false;canvas.classList.remove('grabbing');}
+  canvas.addEventListener('pointerdown',e=>{
+    // cattura esplicita: dentro l'app il riquadro e' a tutto schermo e i
+    // controlli sopra (microfono, testo...) hanno z-index piu' alto -- senza
+    // cattura, quando il cursore ci passa sopra a meta' trascinamento il
+    // pointermove finisce a loro invece che al canvas e il giro si ferma
+    if(canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+    down(e.clientX,e.clientY);
+  });
+  window.addEventListener('pointermove',e=>move(e.clientX,e.clientY));
+  window.addEventListener('pointerup',up);
+  window.addEventListener('pointerleave',up);
+  canvas.addEventListener('lostpointercapture',up);
+
+  // ---------- leve di taratura (canale type:'lab', dal pannello lab) ----------
+  const flags={sparkle:true, ripple:true};
+  let heartBoost=1.0; // luce del cuore piena (niente più battito da attenuare)
+  let heartGlow=0;    // rampa lenta del bagliore (salita rapida, discesa a rallentatore)
+  let rotBoost=2.5;   // moltiplicatore velocità rotazione/inclinazione automatica (confermato: 250%)
+
+  let ripStart=-10;
+
+  const IDLE='idle',LISTENING='listening',THINKING='thinking',SPEAKING='speaking';
+  const STATES=[IDLE,LISTENING,THINKING,SPEAKING];
+  // scl e pull: range stretto e condiviso fra i 4 stati (volume/ingombro quasi
+  // costante) cosi' il cambio di stato si legge come cambio d'umore dello
+  // stesso essere, non come un essere diverso ogni volta. La differenziazione
+  // fra stati resta affidata a texture/velocita'/colore (flow, react, rot,
+  // hbAmt...), non piu' a "quanto e' grande/raccolto".
+  const P={
+    idle:      {flow:0.45,react:0.0, emit:0.0,breI:0.040,breS:0.55,rot:0.0009,hbAmt:0.55,pull:0.50,scl:1.00},
+    listening: {flow:0.60,react:-1.8,emit:0.0,breI:0.016,breS:0.80,rot:0.0011,hbAmt:0.20,pull:0.80,scl:0.84},
+    thinking:  {flow:0.50,react:-0.5,emit:0.0,breI:0.018,breS:0.60,rot:0.0026,hbAmt:0.45,pull:0.66,scl:0.96},
+    // scl sotto 1 compensa le spinte verso l'esterno di react/emit: l'ingombro
+    // percepito resta vicino a quello degli altri stati (vedi nota sopra)
+    speaking:  {flow:1.05,react:1.2, emit:1.0,breI:0.055,breS:1.30,rot:0.0020,hbAmt:0.58,pull:0.55,scl:0.78},
+  };
+
+  // venature di default (comportamento originale, mai cambiato finora):
+  // colori fissi indipendenti dallo stato, mescolati per-particella col
+  // rumore "caldo/freddo". Ogni palette può darsi le proprie (campo 'vein',
+  // vedi sotto); se manca si usa questa.
+  const DEFAULT_VEIN={in:[1.0,0.84,0.50],mid:[0.55,0.35,0.95],out:[0.18,0.22,0.60],core:[1.0,0.92,0.78],mode:0};
+
+  const PALETTES={
+    mono:{
+      idle:     {cin:[0.45,0.52,0.85],cmid:[0.20,0.26,0.60],cout:[0.06,0.08,0.25],ccore:[0.80,0.85,1.00],halo:['rgba(60,80,180,0.22)','rgba(25,35,90,0.20)']},
+      listening:{cin:[0.78,0.95,1.00],cmid:[0.35,0.75,0.95],cout:[0.08,0.28,0.55],ccore:[0.90,0.98,1.00],halo:['rgba(127,232,255,0.22)','rgba(40,110,180,0.18)']},
+      thinking: {cin:[0.62,0.58,1.00],cmid:[0.36,0.28,0.95],cout:[0.12,0.06,0.42],ccore:[0.90,0.86,1.00],halo:['rgba(100,85,255,0.26)','rgba(45,30,150,0.20)']},
+      speaking: {cin:[1.00,0.95,0.86],cmid:[0.80,0.78,0.95],cout:[0.30,0.32,0.58],ccore:[1.00,0.97,0.90],halo:['rgba(255,242,220,0.18)','rgba(120,130,220,0.18)']},
+      vein:DEFAULT_VEIN,
+    },
+    neutro:{
+      idle:     {cin:[0.93,0.95,1.00],cmid:[0.60,0.64,0.78],cout:[0.22,0.24,0.34],ccore:[0.55,0.62,0.95],halo:['rgba(92,107,192,0.22)','rgba(40,48,100,0.18)']},
+      listening:{cin:[0.93,0.95,1.00],cmid:[0.60,0.64,0.78],cout:[0.22,0.24,0.34],ccore:[0.30,1.00,0.75],halo:['rgba(46,230,168,0.22)','rgba(20,90,70,0.18)']},
+      thinking: {cin:[0.93,0.95,1.00],cmid:[0.60,0.64,0.78],cout:[0.22,0.24,0.34],ccore:[1.00,0.75,0.35],halo:['rgba(255,184,77,0.20)','rgba(120,80,30,0.18)']},
+      speaking: {cin:[0.93,0.95,1.00],cmid:[0.60,0.64,0.78],cout:[0.22,0.24,0.34],ccore:[1.00,0.45,0.70],halo:['rgba(255,95,162,0.22)','rgba(140,50,110,0.18)']},
+      vein:DEFAULT_VEIN,
+    },
+    // ---- complementare e prisma (2026-07-20): le due direzioni piaciute nel
+    // primo giro di varianti. Sotto, 5 rielaborazioni che restano dentro
+    // queste due famiglie invece di aprirne di nuove — valutate in
+    // essere_vivente_palette_lab.html, nessuna ancora confermata in produzione ----
+    complementare:{
+      // duotone a colori complementari: il nucleo e il bordo non sono due
+      // toni della stessa tinta ma colori opposti sulla ruota -> tensione
+      // cromatica, non una sfumatura morbida. Le venature sono nella tinta
+      // fredda opposta ai nuclei caldi
+      idle:     {cin:[1.30,0.55,0.15],cmid:[0.55,0.35,0.60],cout:[0.10,0.30,0.65],ccore:[1.60,0.85,0.35],halo:['rgba(255,140,50,0.24)','rgba(30,80,160,0.20)']},
+      listening:{cin:[1.30,0.15,0.55],cmid:[0.40,0.45,0.35],cout:[0.10,0.55,0.20],ccore:[1.65,0.45,0.85],halo:['rgba(255,60,150,0.24)','rgba(25,130,55,0.20)']},
+      thinking: {cin:[0.20,1.10,0.55],cmid:[0.45,0.35,0.55],cout:[0.55,0.10,0.55],ccore:[0.65,1.55,0.85],halo:['rgba(70,235,140,0.24)','rgba(120,25,120,0.20)']},
+      speaking: {cin:[1.35,0.85,0.10],cmid:[0.55,0.35,0.60],cout:[0.10,0.20,0.65],ccore:[1.70,1.30,0.45],halo:['rgba(255,205,45,0.24)','rgba(30,55,150,0.20)']},
+      vein:{in:[0.15,0.55,1.20],mid:[0.45,0.30,0.55],out:[1.10,0.35,0.10],core:[0.55,0.85,1.60],mode:0},
+    },
+    prisma:{
+      // iridescente: qui NON conta il mix cin/cmid/cout/ccore come altrove —
+      // la tinta ruota nello spettro seguendo il rumore delle venature
+      // (uVeinMode=1, vedi shader) invece di mescolarsi fra due colori fissi
+      // -> effetto madreperla/opale che cambia colore muovendosi, non una
+      // sfumatura statica. I valori qui sotto sono solo la base neutra su
+      // cui l'iridescenza si somma. hueOffset/noiseScale/sat/speed = valori
+      // originali (spettro pieno, velocità/saturazione di riferimento)
+      idle:     {cin:[0.55,0.65,0.85],cmid:[0.30,0.35,0.55],cout:[0.14,0.18,0.32],ccore:[0.85,0.95,1.15],halo:['rgba(140,160,220,0.20)','rgba(50,60,110,0.18)']},
+      listening:{cin:[0.45,0.75,0.85],cmid:[0.24,0.45,0.55],cout:[0.10,0.24,0.32],ccore:[0.75,1.05,1.15],halo:['rgba(115,190,220,0.20)','rgba(35,85,110,0.18)']},
+      thinking: {cin:[0.65,0.55,0.85],cmid:[0.38,0.30,0.55],cout:[0.18,0.14,0.32],ccore:[0.95,0.85,1.15],halo:['rgba(165,140,220,0.20)','rgba(60,50,110,0.18)']},
+      speaking: {cin:[0.85,0.65,0.55],cmid:[0.55,0.35,0.24],cout:[0.32,0.16,0.10],ccore:[1.15,0.90,0.70],halo:['rgba(220,165,115,0.20)','rgba(110,60,35,0.18)']},
+      vein:{in:[1.0,0.84,0.50],mid:[0.55,0.35,0.95],out:[0.18,0.22,0.60],core:[1.0,0.92,0.78],mode:1,hueOffset:0,noiseScale:0.6,sat:0.70,speed:0.03},
+    },
+    ossidiana:{
+      // complementare — "ossidiana e ambra": identità unificata invece di 4
+      // coppie di tinte diverse (come "complementare") — il bordo resta
+      // sempre pietra vulcanica quasi nera, solo il nucleo caldo si sposta
+      // (ambra->corallo->rame->oro) fra gli stati. Più elegante/drammatico,
+      // meno "candy" del complementare originale; le venature portano
+      // scintille dell'accento opposto sia nel nucleo che nel bordo
+      idle:     {cin:[1.30,0.90,0.40],cmid:[0.42,0.34,0.32],cout:[0.05,0.08,0.20],ccore:[1.65,1.25,0.65],halo:['rgba(255,190,90,0.22)','rgba(20,30,70,0.20)']},
+      listening:{cin:[1.30,0.65,0.55],cmid:[0.42,0.28,0.34],cout:[0.05,0.09,0.22],ccore:[1.65,0.95,0.80],halo:['rgba(255,150,130,0.22)','rgba(20,35,75,0.20)']},
+      thinking: {cin:[1.20,0.55,0.75],cmid:[0.40,0.26,0.40],cout:[0.06,0.07,0.24],ccore:[1.55,0.85,1.05],halo:['rgba(230,140,190,0.22)','rgba(25,30,80,0.20)']},
+      speaking: {cin:[1.50,1.10,0.35],cmid:[0.46,0.36,0.28],cout:[0.06,0.09,0.18],ccore:[1.85,1.55,0.70],halo:['rgba(255,215,100,0.24)','rgba(25,35,65,0.20)']},
+      vein:{in:[0.10,0.20,0.45],mid:[0.35,0.25,0.38],out:[0.70,0.40,0.12],core:[0.22,0.32,0.58],mode:0},
+    },
+    neonUrbano:{
+      // complementare — "neon urbano": la versione più satura/dura della
+      // famiglia, cyberpunk. Identità fissa magenta (nucleo) / ciano (bordo)
+      // su tutti gli stati (differenziati da sfumatura e luminosità dentro
+      // ciascuna famiglia, non da coppie diverse) + venature giallo-verde
+      // come terzo accento acceso, per il caos da insegna al neon
+      idle:     {cin:[1.35,0.15,0.85],cmid:[0.55,0.42,0.62],cout:[0.05,0.85,0.78],ccore:[1.75,0.55,1.15],halo:['rgba(255,60,220,0.24)','rgba(20,150,140,0.20)']},
+      listening:{cin:[1.10,0.15,1.05],cmid:[0.48,0.42,0.68],cout:[0.04,0.95,0.90],ccore:[1.55,0.55,1.45],halo:['rgba(220,60,255,0.24)','rgba(15,170,160,0.20)']},
+      thinking: {cin:[1.45,0.10,0.60],cmid:[0.58,0.38,0.55],cout:[0.06,0.75,0.65],ccore:[1.80,0.50,0.95],halo:['rgba(255,55,140,0.24)','rgba(20,135,115,0.20)']},
+      speaking: {cin:[1.55,0.35,0.95],cmid:[0.65,0.48,0.70],cout:[0.08,1.00,0.90],ccore:[1.95,0.75,1.30],halo:['rgba(255,90,215,0.24)','rgba(25,180,165,0.20)']},
+      vein:{in:[0.85,1.15,0.15],mid:[0.55,0.65,0.30],out:[1.10,0.15,0.55],core:[1.20,1.45,0.35],mode:0},
+    },
+    forestaBrace:{
+      // complementare — "foresta e brace": stessa idea (nucleo/bordo
+      // opposti) ma in chiave organica/rituale invece che elettrica — rosso
+      // brace contro verde foresta, saturazioni più terrose, venature dorate
+      // come scintille/lucciole
+      idle:     {cin:[1.15,0.30,0.15],cmid:[0.45,0.40,0.20],cout:[0.08,0.42,0.15],ccore:[1.55,0.65,0.30],halo:['rgba(255,110,55,0.22)','rgba(25,110,45,0.20)']},
+      listening:{cin:[1.05,0.35,0.30],cmid:[0.42,0.42,0.24],cout:[0.07,0.46,0.22],ccore:[1.45,0.70,0.55],halo:['rgba(240,110,90,0.22)','rgba(25,120,65,0.20)']},
+      thinking: {cin:[0.95,0.30,0.50],cmid:[0.40,0.36,0.30],cout:[0.10,0.38,0.28],ccore:[1.30,0.65,0.80],halo:['rgba(215,105,140,0.22)','rgba(35,105,80,0.20)']},
+      speaking: {cin:[1.35,0.55,0.15],cmid:[0.52,0.46,0.18],cout:[0.10,0.48,0.12],ccore:[1.70,0.95,0.40],halo:['rgba(255,160,60,0.24)','rgba(30,125,35,0.20)']},
+      vein:{in:[1.30,0.95,0.35],mid:[0.65,0.60,0.25],out:[0.20,0.55,0.20],core:[1.55,1.20,0.55],mode:0},
+    },
+    acquamarina:{
+      // prisma — "acquamarina": stesso meccanismo (tinta che ruota seguendo
+      // il rumore, uVeinMode=1) ma banda ristretta al lato freddo dello
+      // spettro (ciano/blu/violetto, noiseScale basso = poca escursione) e
+      // rotazione più lenta -> effetto olio-su-acqua calmo, non l'arcobaleno
+      // pieno di "prisma"
+      idle:     {cin:[0.45,0.85,0.90],cmid:[0.24,0.50,0.58],cout:[0.10,0.24,0.32],ccore:[0.75,1.15,1.20],halo:['rgba(120,205,220,0.20)','rgba(40,90,110,0.18)']},
+      listening:{cin:[0.35,0.95,1.00],cmid:[0.18,0.58,0.65],cout:[0.08,0.28,0.36],ccore:[0.65,1.30,1.35],halo:['rgba(100,220,240,0.20)','rgba(30,100,120,0.18)']},
+      thinking: {cin:[0.55,0.75,0.95],cmid:[0.30,0.44,0.60],cout:[0.14,0.20,0.36],ccore:[0.85,1.05,1.30],halo:['rgba(135,180,225,0.20)','rgba(45,75,110,0.18)']},
+      speaking: {cin:[0.65,0.95,0.85],cmid:[0.38,0.58,0.52],cout:[0.18,0.28,0.28],ccore:[1.00,1.30,1.15],halo:['rgba(155,215,190,0.20)','rgba(50,100,80,0.18)']},
+      vein:{in:[0.60,1.00,1.05],mid:[0.30,0.60,0.68],out:[0.12,0.28,0.36],core:[0.80,1.25,1.35],mode:1,hueOffset:0.50,noiseScale:0.22,sat:0.62,speed:0.018},
+    },
+    prismaIbrido:{
+      // prisma complementare — ibrido: iridescenza (uVeinMode=1) sopra una
+      // base a colori complementari (nucleo caldo, bagliore centrale
+      // freddo/opposto invece che la stessa famiglia) -> il "cuore" brilla
+      // di un colore diverso dalla "carne", più il madreperla che si muove
+      // sopra. La combinazione più insolita delle 5, unisce entrambe le
+      // direzioni piaciute invece di sceglierne una
+      idle:     {cin:[1.10,0.45,0.20],cmid:[0.45,0.40,0.55],cout:[0.10,0.14,0.30],ccore:[0.35,0.65,1.15],halo:['rgba(255,150,70,0.22)','rgba(30,60,140,0.20)']},
+      listening:{cin:[0.20,0.95,0.55],cmid:[0.40,0.48,0.45],cout:[0.10,0.28,0.20],ccore:[1.10,0.45,0.85],halo:['rgba(90,220,140,0.22)','rgba(120,25,90,0.20)']},
+      thinking: {cin:[0.85,0.20,0.75],cmid:[0.50,0.35,0.48],cout:[0.24,0.10,0.28],ccore:[0.35,1.05,0.65],halo:['rgba(210,70,190,0.22)','rgba(30,110,60,0.20)']},
+      speaking: {cin:[1.20,0.75,0.15],cmid:[0.55,0.45,0.35],cout:[0.28,0.15,0.10],ccore:[0.25,0.55,1.15],halo:['rgba(255,195,60,0.24)','rgba(25,55,130,0.20)']},
+      vein:{in:[1.0,0.6,0.3],mid:[0.5,0.4,0.5],out:[0.2,0.2,0.4],core:[0.6,0.8,1.1],mode:1,hueOffset:0.08,noiseScale:0.65,sat:0.75,speed:0.035},
+    },
+
+    // ---- NEBULOSE STELLARI (resa cinematografica) ----
+    // gas di emissione: tinte sature, nucleo caldissimo (valori >1 = bagliore in
+    // additivo), venature nel colore complementare del gas -> filamenti "veri"
+    nebulaOrione:{
+      // Orione: idrogeno rosa/magenta, ossigeno verde-acqua, nucleo bianco-blu caldo
+      idle:     {cin:[1.30,0.30,0.75],cmid:[0.55,0.25,0.70],cout:[0.08,0.30,0.55],ccore:[1.70,0.80,1.25],halo:['rgba(255,90,180,0.24)','rgba(20,70,150,0.20)']},
+      listening:{cin:[1.10,0.35,0.92],cmid:[0.40,0.35,0.75],cout:[0.06,0.45,0.55],ccore:[1.55,0.85,1.45],halo:['rgba(235,95,220,0.24)','rgba(20,120,150,0.20)']},
+      thinking: {cin:[0.80,0.35,1.05],cmid:[0.45,0.30,0.72],cout:[0.10,0.25,0.60],ccore:[1.35,0.75,1.60],halo:['rgba(175,95,255,0.24)','rgba(25,70,150,0.20)']},
+      speaking: {cin:[1.45,0.55,0.78],cmid:[0.60,0.35,0.66],cout:[0.10,0.35,0.55],ccore:[1.90,1.05,1.40],halo:['rgba(255,140,190,0.24)','rgba(25,95,150,0.20)']},
+      vein:{in:[0.30,0.98,0.98],mid:[0.55,0.35,0.85],out:[1.20,0.35,0.72],core:[0.75,1.15,1.35],mode:0},
+    },
+    nebulaCarena:{
+      // Carena: polvere oro/ambra/ruggine contro verde-acqua -> il classico
+      // "teal & orange" del cinema, profondo e caldo
+      idle:     {cin:[1.45,0.75,0.25],cmid:[0.55,0.38,0.28],cout:[0.06,0.20,0.30],ccore:[1.80,1.25,0.60],halo:['rgba(255,175,70,0.24)','rgba(20,65,85,0.20)']},
+      listening:{cin:[1.35,0.85,0.42],cmid:[0.48,0.42,0.34],cout:[0.05,0.28,0.36],ccore:[1.70,1.38,0.88],halo:['rgba(255,200,110,0.24)','rgba(20,90,105,0.20)']},
+      thinking: {cin:[1.20,0.60,0.35],cmid:[0.45,0.35,0.34],cout:[0.08,0.22,0.36],ccore:[1.55,1.05,0.82],halo:['rgba(240,155,90,0.24)','rgba(25,75,95,0.20)']},
+      speaking: {cin:[1.62,1.05,0.30],cmid:[0.58,0.44,0.26],cout:[0.06,0.24,0.30],ccore:[1.98,1.58,0.70],halo:['rgba(255,215,95,0.24)','rgba(25,85,95,0.20)']},
+      vein:{in:[0.20,0.72,0.98],mid:[0.40,0.42,0.46],out:[1.30,0.72,0.20],core:[0.55,0.98,1.28],mode:0},
+    },
+    nebulaVelo:{
+      // Velo (resto di supernova): filamenti verde-acqua e ciano con lampi
+      // magenta iridescenti -> gas che cambia tinta muovendosi
+      idle:     {cin:[0.35,0.98,1.08],cmid:[0.28,0.45,0.65],cout:[0.10,0.18,0.40],ccore:[0.88,1.28,1.38],halo:['rgba(95,220,238,0.22)','rgba(40,60,135,0.20)']},
+      listening:{cin:[0.30,1.08,0.98],cmid:[0.24,0.52,0.60],cout:[0.08,0.24,0.42],ccore:[0.78,1.38,1.28],halo:['rgba(85,240,215,0.22)','rgba(35,95,120,0.20)']},
+      thinking: {cin:[0.55,0.72,1.18],cmid:[0.32,0.40,0.70],cout:[0.14,0.16,0.46],ccore:[0.98,1.08,1.48],halo:['rgba(140,175,255,0.22)','rgba(45,55,140,0.20)']},
+      speaking: {cin:[0.62,1.02,1.02],cmid:[0.42,0.56,0.60],cout:[0.12,0.28,0.38],ccore:[1.08,1.38,1.32],halo:['rgba(150,230,220,0.22)','rgba(45,110,120,0.20)']},
+      vein:{in:[1.15,0.35,0.88],mid:[0.48,0.40,0.72],out:[0.15,0.58,0.78],core:[1.28,0.72,1.12],mode:1,hueOffset:0.55,noiseScale:0.35,sat:0.66,speed:0.02},
+    },
+    nebulaCosmo:{
+      // profondità cosmica: viola/indaco e rosa con nucleo oro -> elegante,
+      // notturno, molto "poster di fantascienza"
+      idle:     {cin:[0.85,0.45,1.18],cmid:[0.42,0.30,0.72],cout:[0.12,0.10,0.38],ccore:[1.38,0.98,1.58],halo:['rgba(170,110,255,0.22)','rgba(50,30,115,0.20)']},
+      listening:{cin:[0.70,0.55,1.22],cmid:[0.36,0.34,0.72],cout:[0.10,0.14,0.40],ccore:[1.18,1.08,1.62],halo:['rgba(145,135,255,0.22)','rgba(45,45,120,0.20)']},
+      thinking: {cin:[1.02,0.40,1.05],cmid:[0.48,0.28,0.66],cout:[0.16,0.10,0.36],ccore:[1.48,0.88,1.48],halo:['rgba(205,105,235,0.22)','rgba(60,30,110,0.20)']},
+      speaking: {cin:[1.28,0.60,0.95],cmid:[0.55,0.38,0.62],cout:[0.18,0.14,0.34],ccore:[1.72,1.18,1.38],halo:['rgba(235,140,215,0.22)','rgba(70,40,105,0.20)']},
+      vein:{in:[1.22,0.88,0.35],mid:[0.60,0.45,0.55],out:[0.30,0.18,0.55],core:[1.48,1.18,0.72],mode:0},
+    },
+  };
+  // palette di produzione (decisa 2026-07-20, dopo confronto in
+  // essere_vivente_palette_lab.html): 'complementare', non più 'mono'
+  let palette=PALETTES.complementare;
+  let state=IDLE;
+  // stato di partenza dell'ultimo passaggio: serve a sfumare anche i segnali
+  // sintetici (sorgente livello, soglia minima di energia) fra "da" e "verso",
+  // non solo i parametri cur/colori — senza, sparivano di colpo al cambio stato
+  let lastState=IDLE;
+  // Passaggi tra stati: tween a durata (non più lerp per-frame) in due onde
+  // staccate — il colore "annuncia" il cambiamento, forma/comportamento lo
+  // seguono con un piccolo scarto (idea "respiro organico", vedi
+  // docs/superpowers/specs/2026-07-13-transizioni-stati-essere-vivente-design.md).
+  // Valori di default = quelli di produzione; il laboratorio li sovrascrive
+  // via {type:'lab'} per la taratura a occhio, non persistono da soli.
+  // TRANS_IDLE_MULT allunga il ritorno a riposo da qualunque stato di
+  // partenza, "parla" incluso: un solo comportamento, non un caso a parte.
+  let TRANS_COLOR_MS=760, TRANS_SHAPE_MS=1500, TRANS_STAGGER_MS=150, TRANS_IDLE_MULT=2.2;
+  function easeInOutCubic(x){ return x<0.5 ? 4*x*x*x : 1-Math.pow(-2*x+2,3)/2; }
+  const cur={flow:P.idle.flow,react:P.idle.react,emit:P.idle.emit,breI:P.idle.breI,breS:P.idle.breS,rot:P.idle.rot,
+             hbAmt:P.idle.hbAmt,pull:P.idle.pull,scl:P.idle.scl};
+  // fotografia di cur/colori nell'istante esatto dell'ultimo cambio di stato:
+  // il tween riparte sempre da qui, mai dal bersaglio precedente (che potrebbe
+  // non essere mai stato raggiunto) — è così che un'interruzione a metà
+
+  // passaggio non produce mai un salto
+  const fCur=Object.assign({},cur);
+  let transStartT=0;
+  const tIn=new THREE.Color(),tMid=new THREE.Color(),tOut=new THREE.Color(),tCore=new THREE.Color();
+  const fIn=new THREE.Color().copy(cIn),fMid=new THREE.Color().copy(cMid),
+        fOut=new THREE.Color().copy(cOut),fCore=new THREE.Color().copy(cCore);
+  function setTargetColors(p){
+    tIn.setRGB(p.cin[0],p.cin[1],p.cin[2]);tMid.setRGB(p.cmid[0],p.cmid[1],p.cmid[2]);
+    tOut.setRGB(p.cout[0],p.cout[1],p.cout[2]);tCore.setRGB(p.ccore[0],p.ccore[1],p.ccore[2]);
+  }
+  function applyPalette(name){
+    if(!PALETTES[name]) return;
+    palette=PALETTES[name];
+    // niente più alone di sfondo colorato (era qui): lo stato si legge solo
+    // dal colore delle particelle stesse, il dietro resta vuoto/trasparente
+    setTargetColors(palette[state]);
+    // venature: cambiano subito (come i colori di stato, che di fatto sono
+    // già a bersaglio quando non c'è una transizione di stato in corso —
+    // niente tween dedicato, coerente con setTargetColors sopra)
+    const v=palette.vein||DEFAULT_VEIN;
+    uniforms.uVeinIn.value.setRGB(v.in[0],v.in[1],v.in[2]);
+    uniforms.uVeinMid.value.setRGB(v.mid[0],v.mid[1],v.mid[2]);
+    uniforms.uVeinOut.value.setRGB(v.out[0],v.out[1],v.out[2]);
+    uniforms.uVeinCore.value.setRGB(v.core[0],v.core[1],v.core[2]);
+    uniforms.uVeinMode.value=v.mode||0;
+    uniforms.uVeinHueOffset.value=typeof v.hueOffset==='number'?v.hueOffset:0;
+    uniforms.uVeinNoiseScale.value=typeof v.noiseScale==='number'?v.noiseScale:0.6;
+    uniforms.uVeinSat.value=typeof v.sat==='number'?v.sat:0.70;
+    uniforms.uVeinSpeed.value=typeof v.speed==='number'?v.speed:0.03;
+  }
+  applyPalette('complementare');
+
+  function setState(s){
+    if(!STATES.includes(s) || s===state) return;
+    fIn.copy(cIn); fMid.copy(cMid); fOut.copy(cOut); fCore.copy(cCore);
+    Object.assign(fCur,cur);
+    transStartT=clock.elapsedTime;
+    lastState=state;
+    state=s;
+    document.body.className='state-'+s;
+    setTargetColors(palette[s]);
+    if(s===THINKING){ ripStart=clock.elapsedTime-2.0; }
+  }
+
+  const FEED_TTL=0.6;
+  let extLevel=0, extBass=0, extTreb=0, extAt=-10;
+  const clamp01=v=>Math.max(0,Math.min(1,Number(v)||0));
+  function setLevel(v,bass,treble){
+    extLevel=clamp01(v); extBass=clamp01(bass); extTreb=clamp01(treble);
+    extAt=clock.elapsedTime;
+  }
+  let wordPulse=0;
+  function pulse(){ wordPulse=1.0; }
+
+  window.addEventListener('message',e=>{
+    const d=e.data;
+    if(!d||typeof d!=='object') return;
+    if(d.type==='state') setState(d.value);
+    else if(d.type==='level') setLevel(d.value,d.bass,d.treble);
+    else if(d.type==='pulse') pulse();
+    else if(d.type==='config'){
+      if(d.palette) applyPalette(d.palette);
+    }
+    else if(d.type==='lab'){
+      Object.assign(flags, d.flags||{});
+      if(typeof d.heartBoost==='number') heartBoost=d.heartBoost;
+      // dimensione/densità del nucleo: persiste sempre uguale, indipendente dallo
+      // stato (idle/listening/thinking/speaking) -> è "il centro da cui parte l'energia"
+      if(typeof d.coreSize==='number') uniforms.uCoreSize.value=d.coreSize;
+      if(typeof d.density==='number') uniforms.uDensity.value=d.density;
+      if(typeof d.sizeBoost==='number') uniforms.uSizeBoost.value=d.sizeBoost;
+      if(typeof d.brightness==='number') uniforms.uBrightness.value=d.brightness;
+      if(typeof d.reactMode==='number') uniforms.uReactMode.value=d.reactMode;
+      if(typeof d.rotBoost==='number') rotBoost=d.rotBoost;
+      // dimensione complessiva (1 = auto-fit attuale) e altezza nel riquadro
+      // (frazione del raggio: +0.5 = mezza entità più in alto). Scala/posizione
+      // del group, non della camera: il parallasse e il fit restano intatti
+      if(typeof d.zoom==='number'){
+        const z=Math.max(0.05,d.zoom);
+        group.scale.setScalar(z);
+        uniforms.uZoom.value=z; // i punti seguono lo zoom (vedi vertex shader)
+      }
+      if(typeof d.offsetY==='number'){ group.position.y=d.offsetY*10.5; }
+      if(typeof d.transColorMs==='number') TRANS_COLOR_MS=d.transColorMs;
+      if(typeof d.transShapeMs==='number') TRANS_SHAPE_MS=d.transShapeMs;
+      if(typeof d.transStaggerMs==='number') TRANS_STAGGER_MS=d.transStaggerMs;
+      if(typeof d.transIdleMult==='number') TRANS_IDLE_MULT=d.transIdleMult;
+      if(!flags.ripple){ uniforms.uRipAmp.value=0; }
+    }
+  });
+  window.EssereVivente={setState,setLevel,pulse,applyPalette,get state(){return state;}};
+
+  function speakEnvelope(t){
+    const syl=Math.max(0,Math.sin(t*11.0));
+    const word=0.45+0.55*(0.5+0.5*Math.sin(t*1.9));
+    const pause=(Math.sin(t*0.55)>0.82)?0.18:1.0;
+    let v=(0.22+0.78*syl)*word*pause+(Math.random()-0.5)*0.05;
+    return Math.max(0,Math.min(1,v))*0.85;
+  }
+
+  function resize(){
+    const {w,h}=vp();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+    renderer.setSize(w,h,false);
+    camera.aspect=w/h; camera.updateProjectionMatrix();
+    const minSide=Math.min(w,h);
+    // inquadratura costante: nessun gradino a soglie di pixel, l'entita' riempie
+    // sempre la stessa frazione del lato corto del riquadro (calibrato sull'aspetto
+    // del laboratorio essere_vivente_lab.html, che resta il riferimento)
+    const R=10.5*1.02;
+    const vfov=(camera.fov*Math.PI/180)/2, hfov=Math.atan(Math.tan(vfov)*camera.aspect), fit=Math.min(vfov,hfov);
+    let dist=R/Math.sin(fit)+1.0; dist=Math.max(12,Math.min(dist,140));
+    camera.position.z=dist; uniforms.uDist.value=dist;
+    // dimensione punti proporzionale al riquadro (continua, non a scatti): stessa
+    // densita'/spessore percepiti sia a riquadro grande che piccolo
+    const sizeScale=Math.max(0.2,Math.min(1,minSide/700));
+    uniforms.uSize.value=(reduced?3.2:2.8)*sizeScale;
+  }
+  let rq=false;
+  function onResize(){ if(rq)return; rq=true; requestAnimationFrame(()=>{rq=false;resize();}); }
+  window.addEventListener('resize',onResize);
+  window.addEventListener('orientationchange',onResize);
+  if(window.visualViewport) window.visualViewport.addEventListener('resize',onResize);
+  resize();
+
+  let level=0, bassS=0, trebS=0; const idleDrift=reduced?0:1;
+  // fase accumulata di respiro: avanza di frequenza*dt a ogni frame. Con
+  // sin(t*frequenza) invece, quando la frequenza viene interpolata nei cambi
+  // di stato, la fase (t*frequenza) spazza decine di cicli in pochi istanti e
+  // l'entità "pulsa all'impazzata" per tutta la transizione — tanto più
+  // violentemente quanto più la pagina è aperta da tempo (t grande).
+  let brePhase=0;
+  const clock=new THREE.Clock();
+  function tick(){
+    const dt=Math.min(clock.getDelta(),0.05); const t=clock.elapsedTime;
+    uniforms.uTime.value=t;
+    wordPulse=Math.max(0,wordPulse-dt*4.5);
+
+    const p=P[state];
+    const toIdle=(state===IDLE);
+    const elapsed=t-transStartT;
+    // un solo respiro organico per qualunque passaggio, anche parla->riposo:
+    // il ritorno a idle è sempre lo stesso gesto lento (TRANS_IDLE_MULT), da
+    // qualunque stato si parta
+    const mult=toIdle?TRANS_IDLE_MULT:1;
+    const colorDur=reduced?0.2:(TRANS_COLOR_MS/1000)*mult;
+    const shapeDur=reduced?0.2:(TRANS_SHAPE_MS/1000)*mult;
+    const stagger =reduced?0  :(TRANS_STAGGER_MS/1000)*mult;
+    const colorEase=easeInOutCubic(clamp01(elapsed/colorDur));
+    const shapeEase=easeInOutCubic(clamp01((elapsed-stagger)/shapeDur));
+    cur.flow=fCur.flow+(p.flow-fCur.flow)*shapeEase; cur.react=fCur.react+(p.react-fCur.react)*shapeEase;
+    cur.emit=fCur.emit+(p.emit-fCur.emit)*shapeEase;
+    cur.breI=fCur.breI+(p.breI-fCur.breI)*shapeEase; cur.breS=fCur.breS+(p.breS-fCur.breS)*shapeEase;
+    cur.rot=fCur.rot+(p.rot-fCur.rot)*shapeEase;
+    cur.hbAmt=fCur.hbAmt+(p.hbAmt-fCur.hbAmt)*shapeEase;
+    cur.pull=fCur.pull+(p.pull-fCur.pull)*shapeEase;
+    cur.scl=fCur.scl+(p.scl-fCur.scl)*shapeEase;
+
+    const fresh=(t-extAt)<FEED_TTL;
+    // sorgente livello e soglia minima di energia calcolate PER STATO, così il
+    // tween può fonderle fra stato di partenza e di arrivo (vedi sotto): al
+    // cambio stato l'inviluppo di "parla" sfuma in ampiezza lungo tutta l'onda
+    // forma invece di spegnersi nello stesso frame — l'essere si calma, non scatta
+    function srcLvlFor(s){
+      // ascolto: pulsazione sintetica propria (taratura originale), ma NESSUNA
+      // reazione alla voce vera: il livello microfono (extLevel) è ignorato qui —
+      // l'essere ascolta raccolto, non si contrae a ogni parola dell'utente
+      if(s===LISTENING) return 0.25+0.5*Math.abs(Math.sin(t*3.0))*Math.abs(Math.sin(t*0.7));
+      if(s===SPEAKING)  return Math.max(fresh?extLevel:speakEnvelope(t), wordPulse*0.9);
+      if(s===THINKING)  return 0.12+0.08*Math.sin(t*1.6);
+      return 0.05+0.04*Math.sin(t*0.8);
+    }
+    function driveFloorFor(s){
+      if(s===LISTENING) return 0.33+0.17*Math.sin(t*2.2);
+      if(s===SPEAKING)  return 0.45+0.30*Math.abs(Math.sin(t*3.0));
+      if(s===THINKING)  return 0.30+0.10*Math.sin(t*1.3);
+      return 0;
+    }
+    const srcFrom=srcLvlFor(lastState), srcTo=srcLvlFor(state);
+    const srcLvl=srcFrom+(srcTo-srcFrom)*shapeEase;
+    const k=srcLvl>level?0.5:0.08; level+=(srcLvl-level)*k;
+
+    // stessa fusione per la soglia minima: il pavimento dello stato di partenza
+    // si spegne mentre quello di arrivo si accende (per lastState=idle il
+    // pavimento "da" è 0, quindi l'ingresso resta identico a prima:
+    // pavimento*shapeEase)
+    const floor=driveFloorFor(lastState)*(1-shapeEase)+driveFloorFor(state)*shapeEase;
+    const drive=Math.max(level,floor);
+
+    const wantBass=(fresh&&(state===LISTENING||state===SPEAKING))?extBass:0;
+    const wantTreb=(fresh&&(state===LISTENING||state===SPEAKING)&&flags.sparkle)?extTreb:0;
+    bassS+=(wantBass-bassS)*(wantBass>bassS?0.5:0.12);
+    trebS+=(wantTreb-trebS)*(wantTreb>trebS?0.6:0.15);
+    uniforms.uBass.value=bassS;
+    uniforms.uTreble.value=trebS;
+
+    // NIENTE BATTITO RITMICO: il nucleo è una luce FISSA ma reattiva. uHeart resta
+    // agganciato solo all'energia continua (level) -> il cuore si accende quando c'è
+    // voce/attività, senza schema tum-tum-pausa
+    uniforms.uHeart.value=level*0.5;
+    uniforms.uHeartAmt.value=cur.hbAmt+level*0.9;
+    uniforms.uHeartBoost.value=heartBoost;
+
+    // il CUORE è SEMPRE pieno di luce: una base alta e costante (che cala solo
+    // dolcemente a tratti, respiro lento ~22s) più la reazione all'energia sopra.
+    // Non c'è mai il buio del battito: la luce centrale resta accesa in ogni stato.
+    const slowBreath=0.5+0.5*Math.sin(t*0.28);
+    const glowFloor=0.78+0.18*slowBreath;
+    const glowTarget=Math.max(glowFloor, Math.min(1.2,level*1.3))*heartBoost;
+    heartGlow+=(glowTarget-heartGlow)*(glowTarget>heartGlow?0.10:0.03);
+    uniforms.uHeartGlow.value=heartGlow;
+    uniforms.uCorePull.value=cur.pull+(state===LISTENING?drive*0.7:0.0);
+    uniforms.uEmit.value=cur.emit;
+    uniforms.uDrive.value=drive;
+    uniforms.uStateScale.value=cur.scl;
+    uniforms.uWord.value=wordPulse;
+
+    uniforms.uLevel.value=level;
+    uniforms.uFlow.value=cur.flow; uniforms.uReact.value=cur.react;
+    brePhase+=dt*cur.breS;
+    uniforms.uBreath.value=cur.breI*Math.sin(brePhase);
+
+    if(dragging){
+      // trascinamento: controllo diretto Euler, invariato
+      curRY+=(targRY-curRY)*0.06; curRX+=(targRX-curRX)*0.06;
+      group.rotation.set(curRX,curRY,0);
+    } else if(idleDrift){
+      // tumbling libero ma sempre visibile: l'asse resta nel piano X/Y (mai
+      // una componente verso la camera, altrimenti girerebbe "di taglio" e
+      // sembrerebbe fermo) e il mix tra X e Y scorre lentamente nel tempo,
+      // cosi' nessuno dei due e' fisso/privilegiato
+      const axAngle=t*0.05;
+      tumbleAxis.set(Math.cos(axAngle),Math.sin(axAngle),0);
+      tumbleQuat.setFromAxisAngle(tumbleAxis, 0.11*rotBoost*dt);
+      group.quaternion.premultiply(tumbleQuat);
+      // tengo Euler/target allineati così un drag che riparte non scatta
+      curRX=group.rotation.x; curRY=group.rotation.y; targRX=curRX; targRY=curRY;
+    }
+
+    const par=isCoarse?0.25:1.0; const tx=mx*0.8*par, ty=0.4-my*0.5*par;
+    camera.position.x+=(tx-camera.position.x)*0.04; camera.position.y+=(ty-camera.position.y)*0.04;
+    camera.lookAt(0,0,0);
+
+    if(flags.ripple && state===THINKING && t-ripStart>1.5){
+      ripStart=t;
+    }
+    if(flags.ripple){
+      const ripAge=t-ripStart;
+      if(ripAge<1.2){
+        uniforms.uRipR.value=ripAge*7.5;
+        uniforms.uRipAmp.value=0.9*Math.exp(-ripAge*1.8);
+      } else uniforms.uRipAmp.value=0;
+    } else {
+      uniforms.uRipAmp.value=0;
+    }
+
+    // uCIn/uMid/uOut/uCore restano il colore puro dello stato (tIn/tMid/... già
+    // aggiornati da setState/applyPalette): il caldo/freddo ora vive nello
+    // shader, per-particella, agganciato al rumore dei filamenti
+    cIn.copy(fIn).lerp(tIn,colorEase); cMid.copy(fMid).lerp(tMid,colorEase);
+    cOut.copy(fOut).lerp(tOut,colorEase); cCore.copy(fCore).lerp(tCore,colorEase);
+
+    if(coreSprite){
+      const s=4.7+0.8*heartGlow+1.0*level; // raggio confermato (nucleo sempre acceso)
+      coreSprite.scale.set(s,s,s);
+      coreSprite.material.color.copy(cCore);
+      coreSprite.material.opacity=0.30+0.34*heartGlow+0.12*level; // base alta: mai spento
+    }
+
+    renderer.render(scene,camera); requestAnimationFrame(tick);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

@@ -209,8 +209,64 @@
 
 ## Tappa 7 — Interfaccia Utente
 
-- Oltre la CLI: interfaccia multimodale (voce/testo/componenti), log azioni visibile, conferme
-- **Finito quando**: il founder usa l'assistente senza terminale, con log delle azioni visibile
+Oltre la CLI: interfaccia web multimodale servita **same-origin** da FastAPI (pagina statica,
+nessun framework — vedi DECISIONS.md 2026-07-28). L'**essere vivente** (componente 3D già pronto,
+`export-essere-vivente/`) è il baricentro; il **design visivo è ripreso dall'export dell'interfaccia
+v1** come stella polare (identità, layout, schede flottanti — vedi DECISIONS.md). Il *feel* è stato
+validato con un mockup usa-e-getta prima della costruzione (preferenza registrata "prototipo UX
+prima del TDD"): riferimento in `notes/mockup-tappa7/`.
+
+La composizione dell'**interfaccia finita** (tutti i pezzi, anche quelli che maturano nelle Tappe
+8/9/10 — memoria, catalogo Procedure, account, dispositivi, consumi, notifiche) è tracciata in
+`notes/interfaccia-prodotto-finito.md` — il registro "niente si perde": rimandare ≠ perdere. Qui si
+costruisce solo la fetta di Tappa 7, un incremento **verticale** alla volta (attraversa tutto e
+resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
+
+**Tappa 7.1 — Scheletro web end-to-end**
+- Nuovo modulo `codice/interfaccia_utente/` con `static/` montato da FastAPI su `/` (cookie auth
+  esistente, nessun CORS). Schermata di login ripresa da v1 (email/password sull'auth attuale;
+  pulsanti Google/Microsoft nascosti fino a Tappa 8). Canale unico `/ws/session` (WebSocket) che
+  esegue **un turno di testo in streaming** riusando il motore/streaming di Tappa 6; l'essere
+  vivente reagisce agli stati (idle→thinking→speaking→idle), palette `nebulaCosmo`, zoom 0.85,
+  sfondo con vignetta + griglia visibile.
+- **Finito quando**: il founder apre l'URL, fa login, scrive un messaggio e riceve la risposta in
+  streaming con l'essere vivente che reagisce — senza terminale.
+
+**Tappa 7.2 — Trasparenza: log azioni + conferme + stato connessione**
+- Log azioni dal vivo (dai tool in corso). **Gate di conferma** visivo per le azioni che scrivono
+  fuori (scheda Sì/No con descrizione leggibile fornita dal server — fonte unica per CLI e web);
+  409 azione pendente reso come scheda, non come errore. Indicatore stato WebSocket
+  (online/riconnessione/offline — un prodotto non fallisce in silenzio).
+- **Finito quando**: un invio mail mostra la scheda di conferma nella UI; confermando parte davvero;
+  il log mostra i passi; disconnessione/riconnessione della rete gestita visibilmente.
+
+**Tappa 7.3 — Barra ↔ cronologia unificata + persistenza**
+- La superficie conversazione: la barra di trascrizione in alto **si espande in cronologia**
+  (colonna sfumata, niente pannello separato — vedi DECISIONS.md). **Persistenza** dello storico
+  conversazioni cross-sessione per tenant (il backend salva/recupera i turni).
+- **Finito quando**: dopo un refresh la cronologia c'è ancora; espandere/richiudere la barra funziona.
+
+**Tappa 7.4 — Schede grafiche (`data_presented`)**
+- Renderer client completo (lista/tabella/evento/luogo/grafico/scheda), trascinabili e chiudibili;
+  il backend/agente sa emettere **almeno un tipo su dati reali** (es. lista mail trovate, un evento),
+  col protocollo progettato per tutti i tipi. Parte del prodotto finito (vedi DECISIONS.md), non un
+  di più opzionale.
+- **Finito quando**: una richiesta reale produce almeno una scheda vera guidata da dati reali.
+
+**Tappa 7.5 — Voce nel browser**
+- Cattura microfono (AudioWorklet PCM) + TTS + allineamento parole sulla barra, riusando la Voce di
+  Tappa 6 ma dentro il browser (token effimeri già esistenti, `/voice/token`); modalità
+  Normale/Silenziosa/Spenta; barge-in (interrompere l'assistente parlando). La voce da CLI resta
+  funzionante nel frattempo.
+- **Finito quando**: una conversazione vocale completa avviene dal browser, senza CLI.
+
+**Tappa 7.6 — Rifiniture prodotto**
+- Rendering markdown delle risposte; **PWA** installabile (manifest + service worker); empty/error
+  state curati; accessibilità (focus/tastiera, aria-live, `prefers-reduced-motion`).
+- **Finito quando**: l'interfaccia è installabile e curata sui casi limite.
+
+**Finito quando (Tappa 7 complessiva)**: il founder usa l'assistente **senza terminale** — testo e
+voce, con essere vivente, log delle azioni visibile, conferme e cronologia persistente.
 
 ## Tappa 8 — Fondamenta multi-tenant (SaaS-ificazione)
 

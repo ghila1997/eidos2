@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Essere Vivente · laboratorio sfondo (profondità)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /*
+    Copia di essere_vivente_lab.html dedicata SOLO alla decisione rimasta
+    sullo sfondo: polvere di stelle sì o no. Tutto il resto è deciso e fisso:
+    fondo nero puro. Ombra del vuoto ed emanazione di luce sono state tolte
+    dal componente (essere_vivente_component.html): l'essere non modula più
+    l'ambiente attorno a sé, solo se stesso.
+    Zoom e posizione verticale servono a giudicare l'insieme mentre l'essere
+    si sposta. La scelta finale va poi portata in interfaccia-base/app.js
+    (trama) e style.css (fondo) — questo file è un banco di prova, non la fonte.
+  */
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{display:flex;flex-direction:column;background:#000000;color:#eef1ff;
+    font-family:"Space Grotesk",system-ui,sans-serif}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 20px;font-size:13px;letter-spacing:.2em;text-transform:uppercase;
+    color:#9aa3c7;border-bottom:1px solid rgba(150,165,255,0.12)}
+  header b{color:#eef1ff}
+  header button{letter-spacing:normal;text-transform:none;background:rgba(0,0,0,.25)}
+  iframe{flex:1;border:0;width:100%;display:block;background:transparent}
+
+  /* la polvere vive nel canvas della pagina, sotto l'iframe; la vignetta
+     .void resta quella dell'app (style.css) */
+  #bg{position:fixed;inset:0;z-index:0}
+  .void{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(160% 140% at 50% 42%, transparent 52%, rgba(0,0,0,0.45) 100%)}
+  header,iframe,.panel{position:relative;z-index:2}
+
+  /* il pannello GALLEGGIA sopra la scena (position:fixed) invece di stare nel
+     flusso: l'iframe tiene sempre tutta l'altezza e l'essere non si
+     rimpicciolisce quando i comandi crescono */
+  .panel{position:fixed;left:0;right:0;bottom:0;z-index:3;
+    display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;justify-content:center;
+    padding:16px 20px;border-top:1px solid rgba(150,165,255,0.12);
+    background:rgba(10,12,26,0.78);backdrop-filter:blur(6px)}
+  .panel[hidden]{display:none}
+  .section{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+  .sectionLabel{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#6b729c}
+  .group{display:flex;gap:6px;align-items:center;padding:4px;border-radius:12px;background:rgba(0,0,0,.25);flex-wrap:wrap}
+  button,select{font-family:inherit;font-weight:500;font-size:13px;color:#9aa3c7;border:0;
+    background:transparent;border-radius:9px;padding:8px 13px;cursor:pointer;transition:.2s}
+  button:hover{color:#eef1ff}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #8aa0ff;outline-offset:2px}
+  button.on{color:#06060f;background:linear-gradient(180deg,#fff,#cfd6ff)}
+  select{background:rgba(0,0,0,.25);color:#eef1ff;padding:8px 10px}
+  select option{background:#12142a}
+  label{font-size:12px;color:#9aa3c7;display:flex;gap:8px;align-items:center}
+  input[type=range]{width:130px;accent-color:#8aa0ff}
+  .val{font-variant-numeric:tabular-nums;min-width:34px;color:#eef1ff}
+  .hint{font-size:11px;color:#5b6290;max-width:240px;line-height:1.4}
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<div class="void"></div>
+
+<header>
+  <span>Essere Vivente — <b>laboratorio sfondo (profondità)</b></span>
+  <button id="panelToggle">Nascondi comandi</button>
+</header>
+
+<iframe id="ev" src="essere_vivente_component.html" title="Essere Vivente"></iframe>
+
+<div class="panel">
+
+  <div class="section">
+    <span class="sectionLabel">Stato</span>
+    <div class="group" id="states">
+      <button data-state="idle" class="on">Riposo</button>
+      <button data-state="listening">Ascolto</button>
+      <button data-state="thinking">Pensa</button>
+      <button data-state="speaking">Parla</button>
+    </div>
+    <span class="hint">Fondo nero puro, niente più ombra/emanazione:
+      l'unica decisione aperta è la polvere.</span>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Polvere di stelle</span>
+    <div class="group" id="polvereSwitch">
+      <button data-polvere="si" class="on">Con polvere</button>
+      <button data-polvere="no">Senza (solo nero)</button>
+    </div>
+    <span class="hint">Rada e tenue, quasi impercettibile: 3 strati (seme
+      fisso) a parallasse diverso, e ogni tanto una stella respira di luce
+      per un secondo. Muovi il puntatore per sentire la profondità.</span>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Dimensione e posizione essere</span>
+    <label>Zoom
+      <input type="range" id="evZoom" min="50" max="160" value="100">
+      <span class="val" id="evZoomVal">1.00</span>
+    </label>
+    <label>Posizione verticale
+      <input type="range" id="evOffY" min="-50" max="50" value="19">
+      <span class="val" id="evOffYVal">0.19</span>
+    </label>
+    <span class="hint">Positivo = essere più in alto (nell'app: ESSERE_OFFSET_Y).</span>
+  </div>
+
+  <div class="section">
+    <span class="sectionLabel">Audio (per pilotare la reazione)</span>
+    <div class="group">
+      <select id="feed">
+        <option value="none">nessuno</option>
+        <option value="slider">manuale</option>
+        <option value="voice" selected>voce simulata</option>
+      </select>
+      <label id="sliderRow">Livello
+        <input type="range" id="lvl" min="0" max="100" value="50">
+        <span class="val" id="lvlVal">0.50</span>
+      </label>
+      <button id="pulse">Impulso parola</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const frame=document.getElementById('ev');
+  const send=msg=>frame.contentWindow.postMessage(msg,'*');
+
+  // stato: non persistito, si riparte sempre da riposo
+  const stateBtns=[...document.querySelectorAll('#states button')];
+  stateBtns.forEach(b=>b.addEventListener('click',()=>{
+    stateBtns.forEach(x=>x.classList.toggle('on',x===b));
+    send({type:'state',value:b.dataset.state});
+  }));
+
+  // audio
+  document.getElementById('pulse').addEventListener('click',()=>send({type:'pulse'}));
+  const feed=document.getElementById('feed');
+  const lvl=document.getElementById('lvl');
+  const lvlVal=document.getElementById('lvlVal');
+  lvl.addEventListener('input',()=>{ lvlVal.textContent=(lvl.value/100).toFixed(2); });
+  lvlVal.textContent=(lvl.value/100).toFixed(2);
+
+  function voiceEnvelope(t){
+    const syl=Math.max(0,Math.sin(t*11.0));
+    const word=0.45+0.55*(0.5+0.5*Math.sin(t*1.9));
+    const pause=(Math.sin(t*0.55)>0.82)?0.18:1.0;
+    const v=(0.22+0.78*syl)*word*pause+(Math.random()-0.5)*0.05;
+    return Math.max(0,Math.min(1,v))*0.85;
+  }
+
+  // pannello comandi mostra/nascondi (galleggia sopra la scena, non la ridimensiona)
+  const panel=document.querySelector('.panel');
+  const panelToggle=document.getElementById('panelToggle');
+  panelToggle.addEventListener('click',()=>{
+    panel.hidden=!panel.hidden;
+    panelToggle.textContent=panel.hidden?'Mostra comandi':'Nascondi comandi';
+  });
+
+  // ---- l'unica leva di sfondo rimasta: polvere sì/no ----
+  let polvere=true;
+  let evZoom=1, evOffY=0.19; // posizione verticale confermata (= default del componente)
+  let bgRerender=()=>{};
+
+  const polvereBtns=[...document.querySelectorAll('#polvereSwitch button')];
+  polvereBtns.forEach(b=>b.addEventListener('click',()=>{
+    polvere=b.dataset.polvere==='si';
+    polvereBtns.forEach(x=>x.classList.toggle('on',x===b));
+    bgRerender();
+    saveBg();
+  }));
+
+  // zoom e posizione: ombra ed emanazione seguono da sole (vivono nel componente)
+  const evZoomInp=document.getElementById('evZoom');
+  const evZoomOut=document.getElementById('evZoomVal');
+  evZoomInp.addEventListener('input',()=>{
+    evZoom=evZoomInp.value/100;
+    evZoomOut.textContent=evZoom.toFixed(2);
+    send({type:'lab',zoom:evZoom});
+    saveBg();
+  });
+  const evOffYInp=document.getElementById('evOffY');
+  const evOffYOut=document.getElementById('evOffYVal');
+  evOffYInp.addEventListener('input',()=>{
+    evOffY=evOffYInp.value/100;
+    evOffYOut.textContent=evOffY.toFixed(2);
+    send({type:'lab',offsetY:evOffY});
+    saveBg();
+  });
+  frame.addEventListener('load',()=>{
+    if(evZoom!==1) send({type:'lab',zoom:evZoom});
+    if(evOffY!==0) send({type:'lab',offsetY:evOffY});
+  });
+
+  // le tarature sopravvivono al ricaricamento
+  const BG_KEY='essereViventeSfondoLab.taratura';
+  function saveBg(){
+    localStorage.setItem(BG_KEY,JSON.stringify({polvere,zoom:evZoom,offy:evOffY}));
+  }
+  (function restoreBg(){
+    let s; try{ s=JSON.parse(localStorage.getItem(BG_KEY)); }catch(e){}
+    if(!s) return;
+    if(typeof s.polvere==='boolean') polvere=s.polvere;
+    polvereBtns.forEach(b=>b.classList.toggle('on',(b.dataset.polvere==='si')===polvere));
+    if(Number.isFinite(s.zoom)) evZoom=s.zoom;
+    if(Number.isFinite(s.offy)) evOffY=s.offy;
+    evZoomInp.value=Math.round(evZoom*100); evZoomOut.textContent=evZoom.toFixed(2);
+    evOffYInp.value=Math.round(evOffY*100); evOffYOut.textContent=evOffY.toFixed(2);
+  })();
+
+  // polvere di stelle: 3 strati casuali (seme fisso), radi e tenui —
+  // profondità senza pattern regolare. Quasi tutte le stelle sono fisse
+  // (pre-disegnate su canvas fuori schermo, un blit per strato a frame);
+  // un ~5% luccica con un impulso raro e morbido, quasi impercettibile.
+  // Con prefers-reduced-motion: tutto statico, niente luccichio né parallasse.
+  // Da portare in interfaccia-base/app.js (initBackground) se confermata.
+  (function initBackground(){
+    const cv=document.getElementById('bg');
+    if(!cv) return;
+    const ctx=cv.getContext('2d');
+    const reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+    let W,H,dpr=Math.min(window.devicePixelRatio||1,2);
+    let ox=0,oy=0,tox=0,toy=0;
+    let strati=[]; // {off (canvas statico), sh (parallasse), tw (stelle che luccicano)}
+    function rng(seed){ let s=seed; return ()=>{ s=(s*16807)%2147483647; return (s-1)/2147483646; }; }
+    function build(){
+      // [densità px²/stella, parallasse, taglia, luce] — più rado e tenue della
+      // prima versione: la polvere si deve intuire, non vedere
+      const DEF=[[15000,3,0.5,0.45],[9500,6,0.7,0.7],[6000,10,0.95,1]];
+      strati=DEF.map((def,li)=>{
+        const [den,sh,sz,al]=def;
+        const off=document.createElement('canvas');
+        off.width=W*dpr; off.height=H*dpr;
+        const c=off.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0);
+        const rr=rng(11+li*7);
+        const n=Math.round(W*H/den);
+        const tw=[];
+        const CX=W/2, CY=H/2;
+        for(let i=0;i<n;i++){
+          const x=rr()*W, y=rr()*H;
+          const d=Math.hypot(x-CX,y-CY)/(Math.max(W,H)*0.6);
+          // calo verso i bordi, morbido (la vignetta .void completa)
+          const e=Math.max(0,Math.min((d-0.5)/0.5,1));
+          const eF=1-0.55*e*e*(3-2*e);
+          const a=(0.05+rr()*0.10)*al*eF;      // tenue: massimo ~0.15
+          const r0=(0.4+rr()*0.7)*sz;
+          if(rr()<0.05){ tw.push({x,y,r:r0,a,per:5+rr()*6,ph:rr()*Math.PI*2}); continue; }
+          c.beginPath(); c.arc(x,y,r0,0,7);
+          c.fillStyle='rgba(160,190,235,'+a.toFixed(3)+')';
+          c.fill();
+        }
+        return {off,sh,tw};
+      });
+    }
+    function render(t){
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,cv.width,cv.height);
+      if(!polvere) return;
+      for(const L of strati){
+        const px=ox*L.sh, py=oy*L.sh;
+        ctx.setTransform(1,0,0,1,px*dpr,py*dpr);
+        ctx.drawImage(L.off,0,0);
+        // luccichio: onda lenta elevata a potenza -> quasi sempre al valore
+        // base, ogni tanto un respiro di luce di ~1s, mai un lampo
+        ctx.setTransform(dpr,0,0,dpr,px*dpr,py*dpr);
+        for(const s of L.tw){
+          const p=reduce?0:Math.pow(Math.max(0,Math.sin(t/s.per*6.283+s.ph)),6);
+          const a=Math.min(0.4,s.a*(1+1.6*p));
+          ctx.beginPath(); ctx.arc(s.x,s.y,s.r*(1+0.5*p),0,7);
+          ctx.fillStyle='rgba(185,205,240,'+a.toFixed(3)+')';
+          ctx.fill();
+        }
+      }
+    }
+    function resize(){
+      cv.width=window.innerWidth*dpr; cv.height=window.innerHeight*dpr;
+      cv.style.width=window.innerWidth+'px'; cv.style.height=window.innerHeight+'px';
+      W=window.innerWidth; H=window.innerHeight;
+      build();
+      render(performance.now()/1000);
+    }
+    bgRerender=()=>render(performance.now()/1000);
+    window.addEventListener('pointermove',e=>{
+      if(reduce) return;
+      tox=(e.clientX/window.innerWidth-0.5)*2;
+      toy=(e.clientY/window.innerHeight-0.5)*2;
+    },{passive:true});
+    window.addEventListener('resize',resize);
+    resize();
+    if(!reduce){
+      (function loop(){
+        ox+=(tox-ox)*0.06; oy+=(toy-oy)*0.06;
+        render(performance.now()/1000);
+        requestAnimationFrame(loop);
+      })();
+    }
+  })();
+
+  const t0=performance.now();
+  (function loop(){
+    const t=(performance.now()-t0)/1000;
+    if(feed.value==='slider'){
+      const v=lvl.value/100;
+      send({type:'level',value:v,bass:v*0.7,treble:v*0.4});
+    }else if(feed.value==='voice'){
+      const v=voiceEnvelope(t);
+      send({type:'level',value:v,bass:v*(0.5+0.4*Math.sin(t*2.3)),treble:v*(0.3+0.3*Math.abs(Math.sin(t*7.1)))});
+    }
+    requestAnimationFrame(loop);
+  })();
+})();
+</script>
+</body>
+</html>

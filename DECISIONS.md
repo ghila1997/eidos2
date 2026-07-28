@@ -1332,3 +1332,71 @@ la costruzione parte quando si arriva alla Tappa 10 con `saas-module-builder`. L
 deterministico è nuovo lavoro infrastrutturale non ancora esistente; le Attese vanno tenute
 distinte dagli `impegni` di Memoria (l'impegno è un fatto, l'Attesa una notifica programmata con
 scadenza).
+
+---
+
+## 2026-07-28 — Tappa 7 (Interfaccia Utente): design v1 come stella polare, canale unico, scomposizione 7.1–7.6
+
+**Contesto**: apertura della Tappa 7. Esistono due export pronti: `export-essere-vivente/` (il
+componente 3D autonomo, iframe + Three.js locale, API `postMessage` per stati/palette/livello) e
+`export-interfaccia/` (l'interfaccia dell'Eidos v1 — statici puri: `index.html`/`style.css`/`app.js`
++ PWA). L'utente ha fornito quest'ultimo esplicitamente come riferimento (deroga consapevole alla
+regola CLAUDE.md "ignora Eidos v1": non si è riaperto il codice v1 di propria iniziativa, si è usato
+solo il materiale consegnato, e come riferimento visivo, non come codice da copiare).
+
+**Decisioni prese:**
+
+1. **Stack UI: pagina statica same-origin servita da FastAPI, nessun framework.** HTML/CSS/JS puro
+   (come gli export), montato dal backend già deployato su `/`. Il cookie di sessione attuale
+   (`get_sessione_corrente`, `samesite=lax`) funziona senza CORS. Motivazione: è l'architettura
+   giusta e completa per questa interfaccia (un framework SPA si giustifica solo con una complessità
+   UI che qui non c'è) — non "perché basta per un utente". Nuovo modulo `codice/interfaccia_utente/`.
+
+2. **Design visivo dell'export v1 adottato come stella polare.** Identità (fondo `#04040c`, testo
+   lavanda `#eef1ff`, pannelli in vetro scuro, accento `#8aa0ff`, Space Grotesk/Space Mono), layout
+   (essere al centro a piena schermata, barra in alto, controlli in basso, schede flottanti attorno),
+   e le **schede grafiche flottanti** (`data_presented`: lista/tabella/evento/luogo/grafico/scheda).
+   La costruzione riproduce questo aspetto fin dall'inizio; le funzioni si riempiono nell'ordine
+   della roadmap.
+
+3. **Canale unico `/ws/session` (WebSocket) per la UI web.** Un solo canale multiplexa testo, stati
+   dell'essere, log azioni e conferme (come l'export v1). Supera, **per il percorso UI**, il design
+   "`/chat` e `/chat/stream` due viste sullo stesso motore" (Tappa 2/6): `/chat` (bloccante) resta
+   per il client CLI, `/chat/stream` vocale resta per la Voce CLI; la UI web nasce sul canale di
+   sessione unificato, che riusa il motore/streaming di Tappa 6. Alternative scartate: tenere `/chat`
+   bloccante per la UI (niente streaming → l'essere non può fare thinking/speaking reali, prodotto
+   peggiore); riusare il WS vocale `/chat/stream` così com'è (trascina nella UI testuale la semantica
+   di turno vocale — ponte, speculativo — pensata per la voce).
+
+4. **Descrizione leggibile dell'azione fornita dal server.** Il gate di conferma mostra una
+   `descrizione` in linguaggio naturale dell'azione pending emessa dal backend, fonte unica per CLI
+   e web (evita la duplicazione della mappa tipo→testo oggi solo in `cli.py`, `_descrivi_azione`).
+
+5. **Barra di trascrizione ↔ cronologia unificate in un'unica superficie.** Niente pannello
+   cronologia separato (l'export v1 aveva una linguetta a parte): la barra in alto si **espande**
+   nella cronologia, come colonna **sfumata** (fondo leggibile, bordi che si dissolvono, non una
+   finestra squadrata). Lo storico conversazioni **persiste cross-sessione** per tenant (nuovo
+   requisito backend, Tappa 7.3). Decisione di UX presa validando un mockup usa-e-getta con l'utente.
+
+6. **Config di produzione dell'essere vivente per la UI**: palette `nebulaCosmo`, `zoom` 0.85
+   (−15%), sfondo con griglia di puntini visibile + vignetta a carico della pagina ospite (il
+   componente non dipinge il proprio sfondo). Valori fissati validando il mockup.
+
+7. **Scomposizione della Tappa 7 in sotto-tappe 7.1–7.6** (dentro l'unica ROADMAP.md, come già
+   Tappa 2.1/5.1 — non una roadmap separata: "ogni informazione vive in un punto solo"). Ogni
+   sotto-tappa è un **incremento verticale** eseguibile end-to-end, mai uno strato orizzontale — è
+   la mitigazione diretta della causa-radice del fallimento di Eidos v1 (moduli costruiti in
+   isolamento e collegati solo alla fine). Dettaglio in ROADMAP.md.
+
+8. **Registro "niente si perde"** (`notes/interfaccia-prodotto-finito.md`): la composizione completa
+   dell'**interfaccia finita** — inclusi i pezzi che maturano nelle Tappe 8 (login multi-provider,
+   dispositivi/pairing, account collegati self-service), 9 (consumi/abbonamento) e 10 (catalogo
+   Procedure, osservabilità automazioni) e alcuni buchi non presenti nell'export v1 (vista/correzione
+   della Memoria, notifiche, recupero password, impostazioni). Applica il principio scope-guard:
+   rimandare è legittimo, tagliare in silenzio no.
+
+**Cosa NON cambia**: le Tappe 8/9/10 non si tirano avanti — la Tappa 7 costruisce solo la propria
+fetta (le altre restano nascoste finché non arriva la loro tappa, mai finte-mostrate con dati
+inventati). Nessun codice scritto in questa sessione: design integrato nei documenti di governo;
+la costruzione parte da Tappa 7.1 con `saas-module-builder`. Il *feel* è stato bloccato con un
+mockup usa-e-getta preservato in `notes/mockup-tappa7/`.

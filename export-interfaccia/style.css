@@ -1,0 +1,469 @@
+/*
+  Identita' visiva coerente con essere_vivente_lab.html (docs/modules/08-interfaccia-utente.md,
+  sezione "Identita' visiva"): fondo quasi nero, testo chiaro/lavanda, pannelli
+  in vetro scuro, accento lavanda/blu, "Space Grotesk".
+*/
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap');
+
+:root {
+  --bg: #04040c;
+  --text: #eef1ff;
+  --text-secondary: #9aa3c7;
+  --muted: #6b729c;
+  --core: #ccd9ff;
+  --panel: rgba(18, 20, 42, 0.46);
+  --panel-border: rgba(150, 165, 255, 0.12);
+  --accent: #8aa0ff;
+  --glass: rgba(18, 20, 42, 0.55);
+  --glass-hi: rgba(30, 34, 66, 0.72);
+  --danger: #ff9a9a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* L'attributo hidden deve sempre vincere: senza questo, regole per id come
+   "#login { display: flex }" lo scavalcano e il login non sparisce dopo
+   l'accesso (JS: login.hidden = true). */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border: 0;
+  background: transparent;
+  border-radius: 9px;
+  padding: 8px 13px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+button:hover { color: var(--text); }
+button.active {
+  color: #06060f;
+  background: linear-gradient(180deg, #fff, #cfd6ff);
+}
+
+input[type="text"] {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--panel-border);
+  border-radius: 9px;
+  padding: 8px 12px;
+}
+
+/* ---------- sfondo condiviso: piano prospettico nel vuoto ---------- */
+
+#bg { position: fixed; inset: 0; z-index: 0; }
+.void {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(160% 140% at 50% 42%, transparent 52%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+.brand-lockup { position: fixed; top: 26px; left: 30px; z-index: 4; }
+.brand-lockup .mark {
+  font-weight: 600; font-size: clamp(30px, 4.6vw, 38px); letter-spacing: 0.03em; line-height: 0.95;
+  background: linear-gradient(180deg, #fff, var(--core) 55%, var(--accent));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.brand-lockup .acr {
+  margin-top: 7px; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--muted); max-width: 300px;
+}
+.brand-lockup .acr b { color: var(--accent); font-weight: 600; }
+
+/* ---------- login (Supabase Auth, ADR 017) ---------- */
+
+#login {
+  position: relative; z-index: 2;
+  height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+#login-box {
+  display: flex; flex-direction: column; align-items: center; gap: 2rem;
+  width: min(92vw, 360px);
+}
+.login-lead { text-align: center; }
+.login-lead .k {
+  display: block; font-size: 12px; letter-spacing: 0.28em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 0.7rem;
+}
+.login-lead .h { font-size: clamp(19px, 4.4vw, 25px); font-weight: 400; color: var(--text-secondary); line-height: 1.4; }
+.login-lead .h b { color: var(--text); font-weight: 500; }
+
+.auth { width: 100%; display: flex; flex-direction: column; gap: 1rem; }
+#login-email-form, #login-dev-form { display: flex; flex-direction: column; gap: 1.4rem; }
+#login-providers { display: flex; flex-direction: column; gap: 10px; }
+
+.provider {
+  display: flex; align-items: center; justify-content: center; gap: 11px; width: 100%;
+  font-family: inherit; font-weight: 500; font-size: 14px; color: var(--text);
+  background: var(--glass); border: 1px solid var(--panel-border); border-radius: 11px;
+  padding: 12px 16px; cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+}
+.provider:hover { background: var(--glass-hi); border-color: rgba(150, 165, 255, 0.28); transform: translateY(-1px); color: var(--text); }
+.provider svg { width: 18px; height: 18px; flex: 0 0 auto; }
+
+.divider {
+  display: flex; align-items: center; gap: 12px; margin: 0.2rem 0;
+  color: var(--muted); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase;
+}
+.divider::before, .divider::after { content: ""; height: 1px; flex: 1; background: var(--panel-border); }
+
+.field { position: relative; }
+.field input {
+  width: 100%; font-family: inherit; font-size: 15px; color: var(--text);
+  background: transparent; border: 0; border-bottom: 1px solid rgba(150, 165, 255, 0.32);
+  border-radius: 0; padding: 10px 2px;
+}
+.field input::placeholder { color: transparent; }
+.field input:focus { outline: none; }
+.field label {
+  position: absolute; left: 2px; top: 10px; font-size: 15px; color: var(--text-secondary);
+  pointer-events: none; transition: 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.field input:focus + label,
+.field input:not(:placeholder-shown) + label {
+  top: -14px; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent);
+}
+.field .underline {
+  position: absolute; left: 0; bottom: 0; width: 0; height: 1px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  transition: width 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.field input:focus ~ .underline { width: 100%; }
+
+button.enter {
+  margin-top: 0.3rem; font-family: inherit; font-weight: 600; font-size: 13px;
+  letter-spacing: 0.16em; text-transform: uppercase; color: #06060f;
+  background: linear-gradient(180deg, #fff, #cfd6ff); border: 0; border-radius: 11px;
+  padding: 13px 16px; cursor: pointer; transition: transform 0.15s, box-shadow 0.3s;
+  box-shadow: 0 8px 30px -12px rgba(138, 160, 255, 0.55);
+}
+button.enter:hover { transform: translateY(-1px); box-shadow: 0 12px 38px -12px rgba(138, 160, 255, 0.75); color: #06060f; }
+
+#login-error { color: var(--danger); font-size: 12.5px; text-align: center; }
+
+button:focus-visible, .provider:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ---------- app: layout normale (voce protagonista) ---------- */
+
+#app { position: relative; z-index: 2; height: 100%; }
+
+#essere-vivente-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+/* pointer-events attivo: permette di ruotare l'Essere Vivente trascinando col
+   mouse/touch, come nel laboratorio. I controlli sopra (mic, testo, modalita',
+   schede...) hanno tutti z-index piu' alto e restano cliccabili: l'iframe
+   intercetta solo i punti dove non c'e' nient'altro sopra. */
+#essere-vivente { width: 100%; height: 100%; border: 0; background: transparent; }
+
+/* barra voce/risposta: in alto, monospace, una riga che scorre, discreta e con auto-fade */
+#transcript-bar {
+  position: absolute;
+  left: 50%;
+  top: 7vh;
+  transform: translateX(-50%);
+  max-width: min(92vw, 560px);
+  width: 90%;
+  text-align: center;
+  font-family: 'Space Mono', ui-monospace, monospace;
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+  color: rgba(238, 241, 255, 0.42);
+  z-index: 4;
+  min-height: 1.4em;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: opacity 0.8s;
+}
+#transcript-bar.final { color: rgba(238, 241, 255, 0.66); }
+#transcript-bar.idle { opacity: 0.25; }
+
+#controls {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(92vw, 560px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 5;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 20px;
+  padding: 10px 16px;
+  backdrop-filter: blur(10px);
+}
+#mic-button {
+  font-size: 20px;
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  background: rgba(0, 0, 0, 0.25);
+}
+#mic-button.listening { background: linear-gradient(180deg, #7fe8ff, #286eb4); color: #06060f; }
+#text-form { display: flex; gap: 6px; flex: 1; min-width: 0; }
+#text-form input { flex: 1; min-width: 0; }
+#text-form button { flex: 0 0 auto; }
+
+#mode-switch {
+  position: absolute;
+  right: 16px;
+  bottom: 24px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 4px;
+}
+
+#confirm-box {
+  position: absolute;
+  left: 50%;
+  bottom: 200px;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 14px 18px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+/* schede: finestre flottanti che riempiono lo spazio intorno all'Essere Vivente */
+#cards { position: fixed; inset: 0; z-index: 3; pointer-events: none; }
+.card {
+  pointer-events: auto;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+  min-width: 150px;
+  max-width: var(--cmw, 340px);
+  max-height: var(--cmh, 58vh);
+  background: rgba(18, 20, 42, 0.72);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.7);
+  animation: cardin 0.34s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+@keyframes cardin { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
+.card-head { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 8px; cursor: move; touch-action: none; }
+.card-kind { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
+.card-close { padding: 0 4px; font-size: 16px; color: var(--muted); background: none; }
+.card-close:hover { color: var(--text); }
+.card-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.card-body::-webkit-scrollbar { width: 7px; height: 7px; }
+.card-body::-webkit-scrollbar-thumb { background: rgba(150, 165, 255, 0.18); border-radius: 4px; }
+.card-title { font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 8px; }
+.card-note { font-size: 13px; line-height: 1.5; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
+.card-list { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+.card-list li { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-secondary); }
+.card-list li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.card-table { width: auto; border-collapse: collapse; font-size: 12.5px; }
+.card-table th { text-align: left; font-weight: 500; color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 0 20px 6px 0; }
+.card-table td { padding: 6px 20px 6px 0; border-top: 1px solid var(--panel-border); color: var(--text-secondary); }
+.card-table th:last-child, .card-table td:last-child { padding-right: 0; }
+.card-event { display: flex; gap: 12px; align-items: center; }
+.card-event .date { display: flex; flex-direction: column; align-items: center; min-width: 48px; padding: 7px 8px; border: 1px solid var(--panel-border); border-radius: 10px; background: rgba(0, 0, 0, 0.25); }
+.card-event .date .d { font-size: 18px; font-weight: 600; color: var(--text); line-height: 1; }
+.card-event .date .m { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-top: 2px; }
+.card-event .info { font-size: 13px; color: var(--text-secondary); }
+.card-event .info b { display: block; color: var(--text); font-weight: 500; margin-bottom: 3px; }
+.card-loc { display: flex; gap: 11px; align-items: center; }
+.card-loc .pin { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; background: radial-gradient(circle at 50% 40%, rgba(138, 160, 255, 0.5), rgba(138, 160, 255, 0.08)); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+.card-loc .txt { font-size: 13px; color: var(--text-secondary); }
+.card-loc .txt b { display: block; color: var(--text); font-weight: 500; margin-bottom: 2px; }
+.card-chart { display: flex; align-items: flex-end; gap: 6px; height: 56px; padding-top: 4px; }
+.card-chart .bar { width: 14px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, var(--accent), rgba(138, 160, 255, 0.25)); }
+
+/* cronologia: linguetta apribile sul bordo destro */
+#history-panel {
+  position: absolute;
+  top: 80px;
+  bottom: 80px;
+  right: 0;
+  width: min(86vw, 320px);
+  z-index: 5;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-right: 0;
+  border-radius: 14px 0 0 14px;
+  backdrop-filter: blur(10px);
+  transform: translateX(100%);
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+}
+#history-panel.open { transform: translateX(0); }
+#history-tab {
+  position: absolute;
+  left: -33px;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-right: 0;
+  border-radius: 12px 0 0 12px;
+  padding: 16px 9px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+#history-tab:hover { color: var(--text); }
+#history-list { padding: 18px 16px; overflow-y: auto; }
+.history-row { font-size: 13px; padding: 8px 0; line-height: 1.4; border-bottom: 1px solid var(--panel-border); }
+.history-utente { color: var(--text); }
+.history-assistente { color: var(--text-secondary); }
+
+/* log azioni: sopra la chat, cresce verso l'alto e sfuma sotto l'Essere Vivente */
+#actions-log {
+  position: absolute;
+  left: 50%;
+  top: 40vh;
+  bottom: 112px;
+  transform: translateX(-50%);
+  width: min(90vw, 520px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+  font-size: 12px;
+  z-index: 3;
+  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 55%, transparent 100%);
+}
+.log-row { padding: 2px 0; color: var(--text-secondary); }
+
+/* indicatore consumi: spesa del mese + barra sul budget */
+#usage { position: absolute; left: 16px; bottom: 22px; width: 190px; z-index: 3; }
+.usage-label { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; }
+.usage-amount { font-size: 17px; font-weight: 500; color: var(--text); margin-bottom: 9px; letter-spacing: 0.01em; }
+.usage-amount .of { font-size: 12px; font-weight: 400; color: var(--muted); }
+.usage-bar { height: 6px; border-radius: 5px; background: rgba(150, 165, 255, 0.1); overflow: hidden; }
+.usage-fill { height: 100%; border-radius: 5px; background: linear-gradient(90deg, var(--accent), #7fe8ff); box-shadow: 0 0 12px -2px var(--accent); transition: width 0.4s; }
+.usage-fill.warn { background: linear-gradient(90deg, #ffcf7f, #ff9a9a); box-shadow: 0 0 12px -2px #ff9a9a; }
+
+/* dispositivi: linguetta apribile sul bordo sinistro (ADR 020), specchio della cronologia.
+   position:fixed (non absolute come i pannelli dentro #app): deve poter comparire anche
+   mentre #login e' ancora visibile -- vive fuori da #app apposta, vedi index.html -- quindi
+   serve essere ancorato al viewport, non a un antenato posizionato che potrebbe essere nascosto. */
+#devices-panel {
+  position: fixed;
+  top: 80px;
+  bottom: 80px;
+  left: 0;
+  width: min(86vw, 320px);
+  z-index: 7;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-left: 0;
+  border-radius: 0 14px 14px 0;
+  backdrop-filter: blur(10px);
+  transform: translateX(-100%);
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+}
+#devices-panel.open { transform: translateX(0); }
+#devices-tab {
+  position: absolute;
+  right: -33px;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  padding: 16px 9px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+#devices-tab:hover { color: var(--text); }
+#devices-list { padding: 18px 16px 4px; overflow-y: auto; }
+.device-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 13px; padding: 9px 0; line-height: 1.4; border-bottom: 1px solid var(--panel-border);
+}
+.device-row .device-kind { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-right: 8px; }
+.device-row .device-label { color: var(--text); }
+.device-row .device-seen { color: var(--muted); font-size: 11px; display: block; }
+.device-row button { font-size: 11px; padding: 5px 9px; background: var(--glass); border: 1px solid var(--panel-border); border-radius: 8px; color: var(--text-secondary); }
+.device-row button:hover { color: var(--text); background: var(--glass-hi); }
+#pairing-box { padding: 14px 16px 18px; border-top: 1px solid var(--panel-border); margin-top: auto; }
+#pairing-start { width: 100%; background: var(--glass); border: 1px solid var(--panel-border); border-radius: 10px; padding: 9px; color: var(--text); }
+#pairing-start:hover { background: var(--glass-hi); }
+#pairing-qr { display: flex; justify-content: center; margin-top: 12px; background: #fff; border-radius: 10px; padding: 10px; }
+#pairing-hint { font-size: 11.5px; color: var(--text-secondary); text-align: center; margin-top: 8px; }
+#pairing-error { font-size: 11.5px; color: var(--danger); text-align: center; margin-top: 8px; }
+
+/* account cloud collegati (ADR 024) -- stessa grammatica visiva dei device-row */
+#connections-box { padding: 14px 16px 18px; border-top: 1px solid var(--panel-border); overflow-y: auto; }
+#connections-box h3 { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+#connections-list h4 { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 10px 0 2px; }
+.connection-row {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px;
+  font-size: 13px; padding: 8px 0; line-height: 1.4; border-bottom: 1px solid var(--panel-border);
+}
+.connection-row > div:first-child { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.connection-row .connection-label { color: var(--text); display: block; }
+.connection-row .connection-provider { color: var(--muted); font-size: 11px; display: block; }
+.connection-row button { font-size: 11px; padding: 5px 9px; background: var(--glass); border: 1px solid var(--panel-border); border-radius: 8px; color: var(--text-secondary); }
+.connection-row button:hover { color: var(--text); background: var(--glass-hi); }
+.connection-sync { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.connections-empty { font-size: 12px; color: var(--muted); }
+#connect-controls { display: flex; gap: 6px; margin-top: 10px; }
+#connect-controls select { flex: 1; min-width: 0; font-size: 12px; background: var(--glass); border: 1px solid var(--panel-border); border-radius: 8px; color: var(--text); padding: 6px; }
+#connect-start { background: var(--glass); border: 1px solid var(--panel-border); border-radius: 8px; padding: 6px 10px; color: var(--text); font-size: 12px; white-space: nowrap; }
+#connect-start:hover { background: var(--glass-hi); }
+#connections-note { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+#connections-error { font-size: 11.5px; color: var(--danger); margin-top: 8px; }
+
+/* claim di pairing: schermata dedicata quando si apre il link scansionato (ADR 020) */
+#pairing-claim { text-align: center; }
+#pairing-claim p { color: var(--text-secondary); font-size: 13.5px; margin: 10px 0 0; }
+
+#audio-unlock {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 6;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+}
+
+/* ---------- spenta: mic disattivato visivamente ---------- */
+/* (i layout completi di silenziosa/spenta sono un passo a parte, da rifare sul nuovo impianto) */
+
+body[data-mode="spenta"] #mic-button { opacity: 0.35; pointer-events: none; }

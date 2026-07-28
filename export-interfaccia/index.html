@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#04040c">
+<title>Eidos</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/icons/icon.svg">
+<link rel="apple-touch-icon" href="/static/icons/icon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-mode="normale">
+
+<canvas id="bg" aria-hidden="true"></canvas>
+<div class="void"></div>
+<div class="brand-lockup">
+  <div class="mark">eidos</div>
+  <div class="acr"><b>E</b>nhanced <b>I</b>ntelligent <b>D</b>igital <b>O</b>perating <b>S</b>ystem</div>
+</div>
+
+<section id="login">
+  <div id="login-box">
+    <div class="login-lead">
+      <span class="k">Dal pensiero alla forma</span>
+      <p class="h">Accedi<br><b>per iniziare.</b></p>
+    </div>
+
+    <div class="auth">
+      <form id="login-email-form" hidden>
+        <div class="field">
+          <input id="login-email" type="email" placeholder=" " autocomplete="email" required>
+          <label for="login-email">Email</label>
+          <span class="underline"></span>
+        </div>
+        <div class="field">
+          <input id="login-password" type="password" placeholder=" " autocomplete="current-password" required>
+          <label for="login-password">Password</label>
+          <span class="underline"></span>
+        </div>
+        <button type="submit" class="enter">Entra</button>
+      </form>
+
+      <div id="login-or" class="divider" hidden>oppure</div>
+
+      <div id="login-providers" hidden>
+        <button id="login-google" class="provider" type="button">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+          Continua con Google
+        </button>
+        <button id="login-microsoft" class="provider" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="13" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="13" width="10" height="10" fill="#00A4EF"/><rect x="13" y="13" width="10" height="10" fill="#FFB900"/></svg>
+          Continua con Microsoft
+        </button>
+      </div>
+
+      <!-- Solo quando Supabase non è configurato: login di sviluppo. -->
+      <form id="login-dev-form" hidden>
+        <div class="field">
+          <input id="login-dev-id" type="text" placeholder=" " autocomplete="username" required>
+          <label for="login-dev-id">Id utente (sviluppo)</label>
+          <span class="underline"></span>
+        </div>
+        <button type="submit" class="enter">Entra</button>
+      </form>
+
+      <p id="login-error" class="login-error" role="alert" hidden></p>
+    </div>
+
+    <!-- Accoppiamento di un companion (mobile/tablet) da link scansionato: sostituisce
+         il resto del box login quando l'URL porta ?pair=... (ADR 020). -->
+    <div id="pairing-claim" hidden>
+      <p id="pairing-claim-status">Accoppiamento in corso…</p>
+      <p id="pairing-claim-error" class="login-error" role="alert" hidden></p>
+    </div>
+  </div>
+</section>
+
+<section id="app" hidden>
+
+  <div id="essere-vivente-wrap">
+    <iframe id="essere-vivente" src="/assets/essere_vivente_component.html" title="Essere Vivente"></iframe>
+  </div>
+
+  <div id="transcript-bar" aria-live="polite"></div>
+
+  <div id="confirm-box" hidden>
+    <p id="confirm-message"></p>
+    <button id="confirm-yes">Sì</button>
+    <button id="confirm-no">No</button>
+  </div>
+
+  <div id="actions-log"></div>
+
+  <div id="cards"></div>
+
+  <div id="controls">
+    <button id="mic-button" aria-label="Microfono">🎙</button>
+    <form id="text-form">
+      <input id="text-input" type="text" placeholder="Scrivi un messaggio…" autocomplete="off">
+      <button type="submit">Invia</button>
+    </form>
+  </div>
+
+  <div id="mode-switch">
+    <button data-mode="normale" class="active">Normale</button>
+    <button data-mode="silenziosa">Silenziosa</button>
+    <button data-mode="spenta">Spenta</button>
+  </div>
+
+  <aside id="history-panel">
+    <button id="history-tab">Cronologia</button>
+    <div id="history-list"></div>
+  </aside>
+
+  <div id="usage">
+    <div class="usage-label">Consumi · <span id="usage-month"></span></div>
+    <div class="usage-amount"><span id="usage-spent">€0,00</span> <span class="of" id="usage-budget"></span></div>
+    <div class="usage-bar"><div id="usage-fill" class="usage-fill" style="width:0%"></div></div>
+  </div>
+
+  <button id="audio-unlock">Attiva audio</button>
+
+</section>
+
+<!-- Dispositivi attivi + pairing di un companion via QR (ADR 020). Fuori da #app
+     apposta: deve poter comparire anche mentre #login è ancora visibile (scelta
+     di quale dispositivo rimuovere quando il limite è già pieno). -->
+<aside id="devices-panel">
+  <button id="devices-tab">Dispositivi</button>
+  <div id="devices-list"></div>
+  <div id="pairing-box">
+    <button id="pairing-start" type="button">Aggiungi dispositivo</button>
+    <div id="pairing-qr" hidden></div>
+    <p id="pairing-hint" hidden>Inquadra con la fotocamera del telefono o tablet. Scade tra <span id="pairing-expiry"></span>.</p>
+    <p id="pairing-error" hidden></p>
+  </div>
+
+  <!-- Account cloud collegati (ADR 024): personali per utente. -->
+  <div id="connections-box">
+    <h3>Account collegati</h3>
+    <div id="connections-list"></div>
+    <div id="connect-controls">
+      <select id="connect-capability" aria-label="Capacità">
+        <option value="email">Email</option>
+        <option value="calendario">Calendario</option>
+        <option value="storage">File cloud</option>
+        <option value="messaggistica">Messaggi</option>
+      </select>
+      <select id="connect-provider" aria-label="Fornitore"></select>
+      <button id="connect-start" type="button">Collega account</button>
+    </div>
+    <p id="connections-note">Chi colleghi è tuo: solo tu lo usi. I contenuti sincronizzati
+      entrano nella memoria aziendale condivisa (disattivabile per account).</p>
+    <p id="connections-error" hidden></p>
+  </div>
+</aside>
+
+<!-- Generazione QR per il pairing dei companion (ADR 020) — vendorizzato, nessuna CDN -->
+<script src="/static/vendor/qrcode.js"></script>
+<script src="/static/vendor/qrcode_utf8.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

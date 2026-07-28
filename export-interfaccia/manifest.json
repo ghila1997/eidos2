@@ -1,0 +1,17 @@
+{
+  "name": "Eidos",
+  "short_name": "Eidos",
+  "description": "Assistente operativo AI per imprenditori, PMI e freelance",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#04040c",
+  "theme_color": "#04040c",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

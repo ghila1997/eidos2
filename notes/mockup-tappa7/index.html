@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#04040c">
+<title>Eidos — mockup interfaccia</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-mode="normale">
+
+<canvas id="bg" aria-hidden="true"></canvas>
+<div class="void"></div>
+
+<div class="brand-lockup">
+  <div class="mark">eidos</div>
+  <div class="acr"><b>E</b>nhanced <b>I</b>ntelligent <b>D</b>igital <b>O</b>perating <b>S</b>ystem</div>
+</div>
+
+<div class="mock-badge">MOCKUP · dati finti · nessun backend · solo per il feel</div>
+
+<!-- Essere vivente: il componente vero, così com'è -->
+<div id="essere-wrap">
+  <iframe id="essere" src="essere_vivente_component.html" title="Essere Vivente"></iframe>
+</div>
+
+<!-- Schede grafiche flottanti attorno all'essere -->
+<div id="cards" aria-hidden="true"></div>
+
+<!-- Log azioni: sopra i controlli, sfuma verso l'alto -->
+<div id="actions-log" aria-live="polite"></div>
+
+<!-- LA SUPERFICIE CONVERSAZIONE: barra (collassata) <-> cronologia (espansa) -->
+<div id="convo" class="collapsed">
+  <button id="convo-toggle" aria-label="Espandi cronologia" title="Espandi / richiudi la cronologia">
+    <span class="chev">⌃</span>
+  </button>
+  <div id="transcript-bar" aria-live="polite"><span class="ghost">Scrivi qui sotto per iniziare…</span></div>
+  <div id="history-scroll"></div>
+</div>
+
+<!-- Gate di conferma azione -->
+<div id="confirm-box" hidden>
+  <div class="confirm-kind">Conferma richiesta</div>
+  <p id="confirm-message"></p>
+  <div class="confirm-actions">
+    <button id="confirm-yes" class="enter">Conferma</button>
+    <button id="confirm-no">Annulla</button>
+  </div>
+</div>
+
+<!-- Controlli in basso al centro -->
+<div id="controls">
+  <button id="mic-button" aria-label="Microfono (voce — Tappa 7 dopo)" title="Voce: arriva dopo">🎙</button>
+  <form id="text-form">
+    <input id="text-input" type="text" placeholder="Scrivi un messaggio…" autocomplete="off">
+    <button type="submit">Invia</button>
+  </form>
+</div>
+
+<!-- Modalità voce (visivo) -->
+<div id="mode-switch">
+  <button data-mode="normale" class="active">Normale</button>
+  <button data-mode="silenziosa">Silenziosa</button>
+  <button data-mode="spenta">Spenta</button>
+</div>
+
+<!-- Consumi (aspetto finito — la funzione è Tappa 9) -->
+<div id="usage" title="Aspetto del prodotto finito — la funzione arriva in Tappa 9">
+  <div class="usage-label">Consumi · Luglio</div>
+  <div class="usage-amount">€12,40 <span class="of">/ €50</span></div>
+  <div class="usage-bar"><div class="usage-fill" style="width:25%"></div></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
