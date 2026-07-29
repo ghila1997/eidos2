@@ -98,8 +98,8 @@ function mostraConferma(azione) {
     `</div>` +
     (righe ? `<div class="cf-details">${righe}</div>` : '') +
     (d.corpo ? `<div class="cf-body">${escapeHTML(d.corpo)}</div>` : '') +
-    `<div class="cf-ask">Vuoi procedere?</div>` +
     `<div class="confirm-actions">` +
+      `<span class="cf-ask">Vuoi procedere?</span>` +
       `<button type="button" class="secondary" id="cf-no">Annulla</button>` +
       `<button type="button" class="enter" id="cf-yes">Sì, procedi</button>` +
     `</div>`;
