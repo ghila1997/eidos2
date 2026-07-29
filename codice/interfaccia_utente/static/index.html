@@ -54,10 +54,17 @@
     <span class="dot"></span><span class="txt">Online</span>
   </div>
 
-  <div id="transcript-bar" class="idle" aria-live="polite"></div>
-
-  <!-- log azioni dal vivo (7.2): i tool in corso e completati. -->
-  <div id="actions-log" aria-live="polite"></div>
+  <!-- superficie conversazione UNICA (7.3): in basso, sopra l'input. Ambient
+       (dialogo): passi + testo traslucidi che a riposo spariscono. Espansa
+       (lettura): cronologia a contrasto pieno, azioni inline come processo.
+       Lo storico persiste per tenant e sopravvive al refresh. -->
+  <div id="convo" class="settled">
+    <button id="convo-toggle" type="button" aria-expanded="false"
+            aria-label="Espandi cronologia" aria-controls="history"
+            title="Espandi / richiudi la cronologia"><span class="chev">⌃</span></button>
+    <div id="ambient" aria-live="polite"></div>
+    <div id="history" aria-label="Cronologia conversazione"></div>
+  </div>
 
   <!-- gate di conferma visivo (7.2): riempito dal JS con la descrizione del
        server (formato "tipo mail"); scadenza gestita lato server (TTL 1h). -->

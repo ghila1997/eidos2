@@ -3,7 +3,8 @@ La logica prima viveva nel CLI (`cli._descrivi_azione`); qui e' spostata sul
 server perche' CLI e web mostrino la stessa cosa. Copre le trappole storiche
 (payload Calendar/Memoria che non deve andare in KeyError sul ramo Gmail) e la
 struttura generica {icona, titolo, riepilogo, dettagli, corpo}."""
-from orchestratore.descrizioni_azioni import descrivi_azione
+from orchestratore import azioni
+from orchestratore.descrizioni_azioni import descrivi_azione, esito_azione
 
 
 def _valori(descrizione) -> str:
@@ -84,3 +85,23 @@ def test_struttura_sempre_completa():
         "destinatario": "x@y.it", "oggetto": "O", "corpo": "C"}})
     assert set(d) == {"icona", "titolo", "riepilogo", "dettagli", "corpo"}
     assert isinstance(d["dettagli"], list)
+
+
+# ---- esito azione (Tappa 7.3): frase al passato per la cronologia ----
+
+def test_esito_send_email_nomina_il_destinatario():
+    assert esito_azione({"tipo": azioni.TIPO_SEND_EMAIL,
+                         "payload": {"destinatario": "marco@studio.it"}}) == "Mail inviata a marco@studio.it"
+
+
+def test_esito_create_event_nomina_il_titolo():
+    assert esito_azione({"tipo": azioni.TIPO_CREATE_EVENT,
+                         "payload": {"titolo": "Call preventivo"}}) == "Evento creato: Call preventivo"
+
+
+def test_esito_tipo_sconosciuto_ha_fallback_dignitoso():
+    assert esito_azione({"tipo": "boh", "payload": {}}) == "Azione eseguita"
+
+
+def test_esito_send_email_senza_destinatario_non_mette_none():
+    assert esito_azione({"tipo": azioni.TIPO_SEND_EMAIL, "payload": {}}) == "Mail inviata"

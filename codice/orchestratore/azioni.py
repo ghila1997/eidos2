@@ -5,6 +5,7 @@ direttamente dall'utente (mai dal modello), esegue l'azione reale.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,6 +15,8 @@ from memoria import db as memoria_db
 from memoria import gestione_documenti
 from memoria.entity_resolution import slug_entity
 from . import calendar_client, drive_client, gmail_client
+
+logger = logging.getLogger(__name__)
 
 TIPO_SEND_EMAIL = "send_email"
 TIPO_REPLY_EMAIL = "reply_email"
@@ -166,7 +169,20 @@ async def conferma_azione(
         await _aggiorna_stato(azione_id, STATO_ERRORE)
         raise
     await _aggiorna_stato(azione_id, STATO_INVIATA)
-    return {"stato": STATO_INVIATA}
+
+    # Esito nella cronologia della conversazione (Tappa 7.3): questo e' il punto
+    # unico da cui ogni conferma passa (web/CLI/voce), quindi l'esito entra nel
+    # record da qualunque canade. `descrizioni_azioni` importa `azioni` -> import
+    # locale per non creare un ciclo. La cronologia e' un di piu': se la scrittura
+    # fallisce, l'azione e' comunque riuscita, si logga e basta.
+    from . import conversazione, descrizioni_azioni
+
+    esito = descrizioni_azioni.esito_azione(azione)
+    try:
+        await conversazione.salva_esito(tenant_id, esito)
+    except Exception:
+        logger.warning("salvataggio esito azione in cronologia fallito", exc_info=True)
+    return {"stato": STATO_INVIATA, "esito": esito}
 
 
 async def _esegui_send_email(tenant_id: str, payload: dict[str, Any]) -> None:

@@ -156,3 +156,43 @@ def descrivi_azione(azione: dict) -> dict:
         )
 
     return _componi("⚙", f"Azione '{tipo}'", f"Azione di tipo '{tipo}'", [])
+
+
+# Frase di **esito** (passato, cosa e' stato fatto) di un'azione eseguita, per
+# la cronologia della conversazione (Tappa 7.3): distinta dalla descrizione
+# della scheda pending (presente/futuro) - stessa casa perche' e' sempre
+# "come si dice a parole un'azione", ma informazione diversa. Registrata solo
+# per le azioni che partono davvero (non i rifiuti: un rifiuto non e' una cosa
+# fatta).
+def esito_azione(azione: dict) -> str:
+    tipo = azione.get("tipo", "")
+    p = azione.get("payload") or {}
+    a = p.get("destinatario") or p.get("email")
+    if tipo == azioni.TIPO_SEND_EMAIL:
+        return f"Mail inviata a {a}" if a else "Mail inviata"
+    if tipo == azioni.TIPO_REPLY_EMAIL:
+        return f"Risposta inviata a {a}" if a else "Risposta inviata"
+    if tipo == azioni.TIPO_FORWARD_EMAIL:
+        return f"Mail inoltrata a {a}" if a else "Mail inoltrata"
+    if tipo == azioni.TIPO_SEND_DRAFT:
+        return "Bozza inviata"
+    if tipo == azioni.TIPO_TRASH_EMAIL:
+        return "Mail spostata nel cestino"
+    if tipo == azioni.TIPO_CREATE_EVENT:
+        t = p.get("titolo")
+        return f"Evento creato: {t}" if t else "Evento creato"
+    if tipo == azioni.TIPO_UPDATE_EVENT:
+        return "Evento aggiornato"
+    if tipo == azioni.TIPO_DELETE_EVENT:
+        return "Evento cancellato"
+    if tipo == azioni.TIPO_SHARE_FILE:
+        return f"File condiviso con {a}" if a else "File condiviso"
+    if tipo == azioni.TIPO_TRASH_FILE:
+        return "File spostato nel cestino"
+    if tipo == azioni.TIPO_FORGET_DOCUMENT:
+        return "Documento dimenticato"
+    if tipo == azioni.TIPO_PROPOSE_COMMITMENT:
+        return "Impegno salvato"
+    if tipo == azioni.TIPO_CLOSE_COMMITMENT:
+        return "Impegno chiuso"
+    return "Azione eseguita"

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
-from orchestratore import agente, azioni, streaming
+from orchestratore import agente, azioni, conversazione, streaming
 from orchestratore.descrizioni_azioni import descrivi_azione
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,24 @@ async def gestisci_sessione(
     ognuno esegue un turno di testo, inoltrando delta/tool_in_corso/fine (o
     un evento errore). Ritorna quando il client chiude la connessione."""
     motore = await agente.motore_per(tenant_id)
+
+    # Cronologia all'apertura (Tappa 7.3): il record della conversazione
+    # sopravvive al refresh. Primo evento del canale, prima di leggere qualunque
+    # messaggio; il client lo usa per popolare la cronologia espandibile. Se la
+    # lettura fallisce (DB giu', tabella non migrata) si degrada a cronologia
+    # vuota: la chat e' piu' importante di uno storico, non deve morire.
+    try:
+        messaggi = await conversazione.get_messaggi(tenant_id)
+    except Exception:
+        logger.exception("lettura cronologia fallita, si procede senza storico")
+        messaggi = []
+    await invia({
+        "evento": "storico",
+        "messaggi": [
+            {"ruolo": m["ruolo"], "contenuto": m["contenuto"], "passi": m.get("passi")}
+            for m in messaggi
+        ],
+    })
 
     while True:
         try:
@@ -57,10 +75,36 @@ async def gestisci_sessione(
             continue
 
         try:
+            risposta = ""
+            passi: list[dict] = []
+            passo_per_id: dict[str, dict] = {}
             async for evento in streaming.traduci_turno(
                 motore, testo, canale="testo", tenant_id=tenant_id
             ):
+                tipo = evento.get("evento")
+                if tipo == "tool_in_corso":
+                    # Le "cose fatte in mezzo" al turno: si raccolgono in ordine
+                    # e si salvano col messaggio assistente (mostrate a richiesta
+                    # nella cronologia, viste dal vivo nella superficie ambient).
+                    passo = {"etichetta": evento.get("etichetta") or evento.get("tool") or "", "esito": "ok"}
+                    passi.append(passo)
+                    passo_per_id[evento.get("id")] = passo
+                elif tipo == "tool_finito":
+                    p = passo_per_id.get(evento.get("id"))
+                    if p is not None:
+                        p["esito"] = evento.get("esito", "ok")
+                elif tipo == "fine":
+                    risposta = evento.get("risposta", "")
                 await invia(evento)
         except Exception:
             logger.exception("errore durante un turno web")
             await invia({"evento": "errore", "messaggio": streaming.MESSAGGIO_ERRORE})
+            continue
+
+        # Turno riuscito: si persiste in cronologia (Tappa 7.3). Fallire qui
+        # non deve rompere il canale ne' far comparire un errore su un turno
+        # gia' andato a buon fine: si logga e si prosegue.
+        try:
+            await conversazione.salva_turno(tenant_id, testo, risposta, passi)
+        except Exception:
+            logger.exception("salvataggio turno in cronologia fallito")

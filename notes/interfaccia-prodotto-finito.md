@@ -40,6 +40,17 @@
 - `data_presented`: lista, tabella, evento, luogo, grafico, scheda; trascinabili, auto-posizionate,
   chiudibili ✅ · **Tappa 7.4** (renderer completo; i tipi si riempiono su dati reali, protocollo
   progettato per tutti)
+- 🆕 **Schede nella conversazione come allegati riapribili** · Tappa 7.4. La cronologia 7.3 è
+  per-messaggio proprio per questo: una scheda diventa un messaggio con `tipo`+`payload`, in
+  cronologia appare come chip compatto che **ri-apre** la scheda fluttuante (stesso renderer del
+  vivo). Punti aperti da decidere a 7.4, non prima:
+  - **Snapshot, non live** (consiglio): la scheda riaperta mostra il dato *com'era allora*
+    (etichetta "al <data>"), non rilancia la query — richiedere di nuovo per l'aggiornato. Il
+    re-query dal vivo è ambiguo (dati che cambiano sotto, query con costo/effetti).
+  - **Peso del payload**: lista salvata intera; tabella/grafico grandi con un cap o un riferimento,
+    non tutto inline. Si decide per tipo.
+  - **Doppia resa, stesso renderer**: dal vivo = fluttuante auto-posizionata; in cronologia = chip
+    che ri-apre.
 
 ## G · Cronologia (unificata con la barra — vedi DECISIONS.md)
 - La barra di trascrizione si espande in cronologia (colonna sfumata, non un pannello separato) ·

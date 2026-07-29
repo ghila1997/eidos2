@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from orchestratore import azioni, calendar_client, drive_client, gmail_client
+from orchestratore import azioni, calendar_client, conversazione, drive_client, gmail_client
 
 SUPABASE_URL = "https://fake.supabase.co"
 TENANT_A = "11111111-1111-1111-1111-111111111111"
@@ -87,6 +87,36 @@ async def test_conferma_si_invia_mail_una_sola_volta(respx_mock, monkeypatch):
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiamate == [(PAYLOAD["destinatario"], PAYLOAD["oggetto"], PAYLOAD["corpo"])]
+
+
+@pytest.mark.asyncio
+async def test_conferma_si_scrive_esito_in_cronologia(respx_mock, monkeypatch):
+    """Tappa 7.3: un'azione eseguita lascia il suo esito nella cronologia della
+    conversazione (punto unico per ogni canale: web/CLI/voce)."""
+    _mock_azione(respx_mock, TENANT_A)
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    async def fake_ottieni_token(tenant_id):
+        return "fake-access-token"
+
+    async def fake_invia(*a, **k):
+        return {"id": "msg-1"}
+
+    esiti = []
+
+    async def fake_salva_esito(tenant_id, contenuto):
+        esiti.append((tenant_id, contenuto))
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_ottieni_token)
+    monkeypatch.setattr(gmail_client, "invia_messaggio", fake_invia)
+    monkeypatch.setattr(conversazione, "salva_esito", fake_salva_esito)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert esiti == [(TENANT_A, f"Mail inviata a {PAYLOAD['destinatario']}")]
+    assert risultato["esito"] == f"Mail inviata a {PAYLOAD['destinatario']}"
 
 
 @pytest.mark.asyncio

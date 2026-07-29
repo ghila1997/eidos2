@@ -1,7 +1,12 @@
-/* Interfaccia Eidos — Tappe 7.1 + 7.2.
+/* Interfaccia Eidos — Tappe 7.1 → 7.3.
    7.1: login + essere vivente + un turno di solo testo in streaming (/ws/session).
-   7.2: log azioni dal vivo, gate di conferma visivo (scheda "formato mail" con
-   descrizione fornita dal server), spia stato connessione con auto-riconnessione.
+   7.2: gate di conferma visivo (scheda "formato mail"), spia stato connessione.
+   7.3: superficie conversazione UNICA. In basso, sopra l'input, una superficie
+        "ambient" traslucida: i passi del turno e il testo affiorano lì, sfumano
+        salendo e a riposo si spengono (l'essere resta il baricentro — si dialoga,
+        non si legge). Si espande in cronologia a contrasto pieno (lettura), con
+        i passi "fatti in mezzo" apribili per turno. Lo storico persiste per
+        tenant e sopravvive al refresh.
    Vanilla JS, nessun framework (DECISIONS 2026-07-28). */
 'use strict';
 
@@ -13,9 +18,11 @@ const loginError = $('login-error');
 const textForm = $('text-form');
 const textInput = $('text-input');
 const sendButton = textForm.querySelector('button');
-const bar = $('transcript-bar');
+const convo = $('convo');
+const convoToggle = $('convo-toggle');
+const ambient = $('ambient');
+const history = $('history');
 const essere = $('essere-vivente');
-const actionsLog = $('actions-log');
 const confirmBox = $('confirm-box');
 const connStatus = $('conn-status');
 
@@ -43,37 +50,158 @@ essere.addEventListener('load', () => {
   if (appMostrata) setTimeout(configuraEssere, 300);
 });
 
-/* ---- barra risposta ---- */
-function mostraBar(html, opts = {}) {
-  bar.innerHTML = html;
-  bar.classList.toggle('idle', !!opts.idle);
+/* ---- superficie ambient (il turno dal vivo) ----
+   Due zone: i passi in alto, il testo che si scrive sotto; l'esito di un'azione
+   si aggiunge in coda quando l'azione parte. `settled` = a riposo, si spegne. */
+let stepsEl = null;
+let sayEl = null;
+let timerSettle = null;
+
+// La superficie ambient è un flusso CONTINUO: un nuovo turno NON cancella
+// quello prima - si accoda in fondo e le righe vecchie scorrono su e sfumano.
+// Così inviare un messaggio è una continuazione fluida, non un reset.
+function ambientNuovoTurno(testoUtente) {
+  if (timerSettle) { clearTimeout(timerSettle); timerSettle = null; }
+  convo.classList.remove('settled');
+  const hint = ambient.querySelector('.amb-hint');
+  if (hint) hint.remove();                       // via l'accenno iniziale
+  if (testoUtente) {
+    const u = document.createElement('div');
+    u.className = 'amb-user';
+    u.textContent = testoUtente;                 // eco discreta del tuo messaggio
+    ambient.appendChild(u);
+  }
+  stepsEl = document.createElement('div');
+  stepsEl.className = 'amb-steps';
+  sayEl = document.createElement('div');
+  sayEl.className = 'amb-say ghost';
+  sayEl.textContent = '…';
+  ambient.appendChild(stepsEl);
+  ambient.appendChild(sayEl);
+  ambientTrim();
 }
 
-/* ---- log azioni: righe in corso (›) -> fatto (✓) / errore (✗), per id ---- */
-function pulisciLog() { actionsLog.innerHTML = ''; }
+// Non far crescere il DOM all'infinito in una sessione lunga: si vedono solo le
+// ultime righe, il resto si può buttare (la cronologia intera è nel DB).
+function ambientTrim() {
+  while (ambient.children.length > 14) ambient.removeChild(ambient.firstChild);
+}
 
-function logInizio(id, etichetta) {
+// Dopo un turno il flusso resta (continuità), solo più discreto (.settled):
+// qualcosa si vede sempre, l'essere torna baricentro. Si dialoga, non si legge.
+function programmaSpegnimento(attesa = 2400) {
+  if (timerSettle) clearTimeout(timerSettle);
+  timerSettle = setTimeout(() => { convo.classList.add('settled'); timerSettle = null; }, attesa);
+}
+
+function ambientStepInizio(id, etichetta) {
+  if (!stepsEl) ambientNuovoTurno('');
   const row = document.createElement('div');
-  row.className = 'log-row';
+  row.className = 'amb-step run';   // "in corso": il pallino pulsa (processo vivo)
   row.dataset.toolId = id || ('t' + Date.now());
-  row.innerHTML = `<span class="tick">›</span>${escapeHTML(etichetta || 'Lavoro…')}`;
-  actionsLog.appendChild(row);
+  row.innerHTML = `<span class="tick">●</span>${escapeHTML(etichetta || 'Lavoro…')}`;
+  stepsEl.appendChild(row);
 }
-function logFine(id, esito) {
-  const row = actionsLog.querySelector(`[data-tool-id="${cssEscape(id)}"]`);
+function ambientStepFine(id, esito) {
+  const row = stepsEl && stepsEl.querySelector(`[data-tool-id="${cssEscape(id)}"]`);
   if (!row) return;
   const errore = esito === 'errore';
+  row.classList.remove('run');
   row.classList.add(errore ? 'errore' : 'done');
   row.querySelector('.tick').textContent = errore ? '✗' : '✓';
 }
-function logRigaEsito(testo, errore) {
+function assicuraSay() {
+  if (!sayEl) {
+    sayEl = document.createElement('div');
+    sayEl.className = 'amb-say';
+    ambient.appendChild(sayEl);
+    ambientTrim();
+  }
+}
+function ambientSay(testo) { assicuraSay(); sayEl.className = 'amb-say'; sayEl.textContent = testo; }
+function ambientErrore(msg) { assicuraSay(); sayEl.className = 'amb-say err'; sayEl.textContent = msg; }
+function ambientEsito(testo) {
   const row = document.createElement('div');
-  row.className = 'log-row ' + (errore ? 'errore' : 'done');
-  row.innerHTML = `<span class="tick">${errore ? '✗' : '✓'}</span>${escapeHTML(testo)}`;
-  actionsLog.appendChild(row);
+  row.className = 'amb-esito';
+  row.innerHTML = `<span class="k">✓</span>${escapeHTML(testo)}`;
+  ambient.appendChild(row);
+  ambientTrim();
 }
 
-/* ---- gate di conferma: scheda "formato mail" ---- */
+/* ---- cronologia (lettura, contrasto pieno) ----
+   `storico` = i messaggi salvati (utente / assistente / esito), verità locale
+   della conversazione: popolata dall'evento `storico` all'apertura (dal DB,
+   sopravvive al refresh) e appesa a ogni turno. I `passi` sull'assistente si
+   aprono su richiesta (variante A). */
+let storico = [];
+
+// Azioni INLINE come processo (niente espandi, stile Claude Code). Un passo con
+// `fatto === false` è ancora in corso (solo dal vivo): pallino che pulsa.
+function passiInlineHTML(passi) {
+  const arr = Array.isArray(passi) ? passi : [];
+  if (!arr.length) return '';
+  const righe = arr.map((p) => {
+    const running = p.fatto === false;
+    const err = p.esito === 'errore';
+    const glyph = running ? '●' : (err ? '✗' : '✓');
+    const cls = 'passo' + (running ? ' run' : '') + (err ? ' errore' : '');
+    return `<div class="${cls}"><span class="tick">${glyph}</span>${escapeHTML(p.etichetta || '')}</div>`;
+  }).join('');
+  return `<div class="passi-inline">${righe}</div>`;
+}
+
+function renderStorico() {
+  history.innerHTML = storico.length
+    ? storico.map((m) => rigaStorico(m)).join('')
+    : '<div class="history-empty">Ancora nessuna conversazione.</div>';
+  aggiornaLiveHistory();   // se un turno è in corso, mostralo dal vivo in coda
+  history.scrollTop = history.scrollHeight;
+}
+
+function rigaStorico(m) {
+  if (m.ruolo === 'utente') {
+    return `<div class="turn user"><span class="who">Tu</span><div class="msg">${escapeHTML(m.contenuto)}</div></div>`;
+  }
+  if (m.ruolo === 'esito') {
+    return `<div class="esito-riga"><span class="k">✓</span>${escapeHTML(m.contenuto)}</div>`;
+  }
+  // un turno che ha solo preparato un'azione può non avere testo: niente bolla vuota
+  const testo = m.contenuto ? `<div class="msg">${escapeHTML(m.contenuto)}</div>` : '';
+  return `<div class="turn assistant"><span class="who">Eidos</span>${testo}${passiInlineHTML(m.passi)}</div>`;
+}
+
+// Il turno in corso, mostrato dal vivo IN CODA alla cronologia quando è aperta:
+// aprendo a metà esecuzione vedi il processo in tempo reale, non solo a percorso
+// finito. Si aggiorna a ogni evento e sparisce a turno chiuso (renderStorico lo
+// ricostruisce col turno ormai salvato).
+function aggiornaLiveHistory() {
+  const esistente = history.querySelector('.live-tail');
+  if (!convo.classList.contains('open') || !turnoInCorso) { if (esistente) esistente.remove(); return; }
+  const vuoto = history.querySelector('.history-empty');
+  if (vuoto) vuoto.remove();
+  let tail = esistente;
+  if (!tail) { tail = document.createElement('div'); tail.className = 'live-tail'; history.appendChild(tail); }
+  const u = turnoUtenteCorrente
+    ? `<div class="turn user"><span class="who">Tu</span><div class="msg">${escapeHTML(turnoUtenteCorrente)}</div></div>` : '';
+  const testo = rispostaCorrente.trim()
+    ? `<div class="msg">${escapeHTML(rispostaCorrente)}</div>` : '<div class="msg ghost">…</div>';
+  tail.innerHTML = u + `<div class="turn assistant"><span class="who">Eidos</span>${testo}${passiInlineHTML(passiCorrenti)}</div>`;
+  history.scrollTop = history.scrollHeight;
+}
+
+function setConvoOpen(open) {
+  convo.classList.toggle('open', open);
+  document.body.classList.toggle('convo-open', open);
+  convoToggle.setAttribute('aria-expanded', String(open));
+  convoToggle.setAttribute('aria-label', open ? 'Richiudi cronologia' : 'Espandi cronologia');
+  if (open) renderStorico();
+}
+
+convoToggle.addEventListener('click', () => setConvoOpen(!convo.classList.contains('open')));
+// cliccare il testo ambient apre la cronologia (leggi tutto)
+ambient.addEventListener('click', () => { if (!convo.classList.contains('open')) setConvoOpen(true); });
+
+/* ---- gate di conferma: scheda "formato mail" (sempre nitida) ---- */
 let azioneCorrente = null;
 
 function oraLeggibile(iso) {
@@ -120,7 +248,6 @@ function chiudiConferma() {
 async function risolviConferma(conferma) {
   if (!azioneCorrente) return;
   const id = azioneCorrente.id;
-  const titolo = (azioneCorrente.descrizione || {}).titolo || 'Azione';
   $('cf-yes').disabled = true; $('cf-no').disabled = true;
   try {
     const r = await fetch(`/azioni/${encodeURIComponent(id)}/conferma`, {
@@ -131,25 +258,30 @@ async function risolviConferma(conferma) {
     if (!r.ok) {
       // 404 (già risolta/altra sessione) o 409: la scheda non è più valida.
       chiudiConferma();
-      mostraBar('<span class="ghost">Questa conferma non è più valida.</span>');
+      ambientErrore('Questa conferma non è più valida.');
       return;
     }
-    const stato = (await r.json()).stato;
+    const risposta = await r.json();
     chiudiConferma();
-    if (stato === 'confermata_inviata') {
-      logRigaEsito(`${titolo}: fatto`, false);
-      mostraBar('Fatto ✓', { idle: false });
-    } else if (stato === 'rifiutata') {
-      mostraBar('<span class="ghost">Annullato.</span>', { idle: true });
-    } else if (stato === 'scaduta') {
-      mostraBar('<span class="err">La conferma è scaduta. Richiedila di nuovo.</span>');
+    if (risposta.stato === 'confermata_inviata') {
+      // l'esito entra nel flusso ambient e nella cronologia persistita
+      const testo = risposta.esito || 'Fatto';
+      ambientEsito(testo);
+      storico.push({ ruolo: 'esito', contenuto: testo, passi: null });
+      if (convo.classList.contains('open')) renderStorico();
+      programmaSpegnimento(2000);
+    } else if (risposta.stato === 'rifiutata') {
+      ambientSay('Annullato.');
+      programmaSpegnimento(1600);
+    } else if (risposta.stato === 'scaduta') {
+      ambientErrore('La conferma è scaduta. Richiedila di nuovo.');
     } else {
-      mostraBar(`<span class="ghost">Stato: ${escapeHTML(stato)}</span>`);
+      ambientSay(`Stato: ${risposta.stato}`);
     }
   } catch {
     // rete assente al momento della conferma: si riprova (scheda resta).
     $('cf-yes').disabled = false; $('cf-no').disabled = false;
-    mostraBar('<span class="err">Connessione assente, riprova a confermare.</span>');
+    ambientErrore('Connessione assente, riprova a confermare.');
   }
 }
 
@@ -157,6 +289,9 @@ async function risolviConferma(conferma) {
 let ws = null;
 let turnoInCorso = false;
 let rispostaCorrente = '';
+let turnoUtenteCorrente = '';
+let passiCorrenti = [];        // le "cose fatte in mezzo", per la cronologia
+let passoPerId = {};
 let primoDeltaVisto = false;
 let chiusuraVoluta = false;
 let tentativiRiconn = 0;
@@ -186,7 +321,7 @@ function connettiWS() {
       // il turno era in volo: il motore server-side non lo riemette, va detto.
       turnoInCorso = false;
       statoEssere('idle');
-      mostraBar('<span class="err">Connessione persa durante la risposta. Riprova.</span>');
+      ambientErrore('Connessione persa durante la risposta. Riprova.');
     }
     programmaRiconnessione();
   });
@@ -206,6 +341,14 @@ addEventListener('offline', () => setConn('offline'));
 
 function gestisciEvento(e) {
   switch (e.evento) {
+    case 'storico':
+      // record della conversazione dal DB, inviato all'apertura (anche a ogni
+      // riconnessione): è la verità, sostituisce quella locale.
+      storico = (e.messaggi || []).map((m) => ({
+        ruolo: m.ruolo, contenuto: m.contenuto || '', passi: m.passi || null,
+      }));
+      if (convo.classList.contains('open')) renderStorico();
+      break;
     case 'delta':
       if (!primoDeltaVisto) {
         primoDeltaVisto = true;
@@ -213,38 +356,54 @@ function gestisciEvento(e) {
         pulseEssere();
       }
       rispostaCorrente += e.testo;
-      mostraBar(escapeHTML(rispostaCorrente));
+      ambientSay(rispostaCorrente);
+      aggiornaLiveHistory();
       break;
-    case 'tool_in_corso':
-      logInizio(e.id, e.etichetta || e.tool);
+    case 'tool_in_corso': {
+      const passo = { etichetta: e.etichetta || e.tool || '', esito: 'ok', fatto: false };
+      passiCorrenti.push(passo);
+      passoPerId[e.id] = passo;
+      ambientStepInizio(e.id, passo.etichetta);
+      aggiornaLiveHistory();
       break;
+    }
     case 'tool_finito':
-      logFine(e.id, e.esito);
+      if (passoPerId[e.id]) { passoPerId[e.id].esito = e.esito; passoPerId[e.id].fatto = true; }
+      ambientStepFine(e.id, e.esito);
+      aggiornaLiveHistory();
       break;
     case 'azione_in_attesa':
       // 409 reso come scheda (non errore): c'era già un'azione da confermare.
       turnoInCorso = false;
       abilitaInput(true);
       statoEssere('idle');
+      aggiornaLiveHistory();
       mostraConferma(e.azione);
       break;
     case 'fine':
       turnoInCorso = false;
       statoEssere('idle');
+      // turno concluso: lo appendo alla cronologia locale (il server lo
+      // persiste in parallelo — qui è per vederlo subito senza refetch).
+      storico.push({ ruolo: 'utente', contenuto: turnoUtenteCorrente, passi: null });
+      storico.push({ ruolo: 'assistente', contenuto: rispostaCorrente.trim(), passi: passiCorrenti.slice() });
+      if (convo.classList.contains('open')) renderStorico();
       if (e.azione_in_attesa) {
-        if (rispostaCorrente.trim()) mostraBar(escapeHTML(rispostaCorrente));
+        // resta in attesa di conferma: l'ambient non si spegne, arriva la scheda
+        if (!rispostaCorrente.trim()) ambientSay('Ho preparato l’azione, confermi?');
         mostraConferma(e.azione_in_attesa);
       } else {
         abilitaInput(true);
-        if (rispostaCorrente.trim()) mostraBar(escapeHTML(rispostaCorrente));
-        else mostraBar('', { idle: true });
+        if (!rispostaCorrente.trim()) ambientSay('Fatto.');
+        programmaSpegnimento();
       }
       break;
     case 'errore':
       turnoInCorso = false;
       abilitaInput(true);
       statoEssere('idle');
-      mostraBar(`<span class="err">${escapeHTML(e.messaggio || 'Errore.')}</span>`);
+      ambientErrore(e.messaggio || 'Errore.');
+      aggiornaLiveHistory();
       break;
   }
 }
@@ -252,11 +411,17 @@ function gestisciEvento(e) {
 function inviaMessaggio(testo) {
   turnoInCorso = true;
   rispostaCorrente = '';
+  turnoUtenteCorrente = testo;
+  passiCorrenti = [];
+  passoPerId = {};
   primoDeltaVisto = false;
-  pulisciLog();
+  // NON richiudo la cronologia se è aperta: scrivere è una continuazione, non
+  // un motivo per chiudere. Il turno si mostra dal vivo sia in ambient (chiuso)
+  // sia in coda alla cronologia (aperto).
+  ambientNuovoTurno(testo);   // si accoda, non resetta (continuazione fluida)
+  aggiornaLiveHistory();
   abilitaInput(false);
   statoEssere('thinking');
-  mostraBar('<span class="ghost">…</span>');
 
   const spedisci = () => ws.send(JSON.stringify({ tipo: 'messaggio', testo }));
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -271,7 +436,7 @@ function inviaMessaggio(testo) {
     turnoInCorso = false;
     abilitaInput(true);
     statoEssere('idle');
-    mostraBar('<span class="err">Sei offline. Il messaggio non è stato inviato.</span>');
+    ambientErrore('Sei offline. Il messaggio non è stato inviato.');
   }
 }
 
@@ -298,6 +463,10 @@ async function mostraApp() {
   appMostrata = true;
   setConn(navigator.onLine ? 'online' : 'offline');
   if (essereCaricato) setTimeout(configuraEssere, 100);
+  // qualcosa si vede sempre: un accenno discreto finché non parte il primo turno
+  if (!ambient.querySelector('.amb-say, .amb-step, .amb-user')) {
+    ambient.innerHTML = '<div class="amb-say ghost amb-hint">Scrivi o parla per iniziare…</div>';
+  }
   connettiWS();
   textInput.focus();
 }

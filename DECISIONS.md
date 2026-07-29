@@ -1512,3 +1512,70 @@ leggibilità; le rifiniture visive vere restano Tappa 7.6, design v1 come stella
 **Esplicitamente fuori scope di questa fetta**: cronologia/persistenza (7.3), schede grafiche
 `data_presented` (7.4), voce/mic nel browser (7.5), markdown/PWA/accessibilità curata e rifiniture
 grafiche (7.6).
+
+---
+
+## 2026-07-29 — Tappa 7.3: superficie conversazione unica (ambient) + cronologia persistente per-messaggio
+
+**Contesto**: 7.3 doveva dare "barra ↔ cronologia unificata + persistenza". Provando dal vivo con
+il founder (STOP 2 iterativo) il design è cresciuto oltre la fetta iniziale approvata allo STOP 1
+(riga-per-turno, solo testo): sono emersi requisiti di prodotto veri — vedere l'**esito** delle
+azioni nella cronologia, le **azioni "fatte in mezzo"** come processo, e un *feel* di **dialogo,
+non lettura**. Rivalidato in chat prima di costruire (nuovo STOP 1 per la parte sostanziale).
+
+**Decisioni**:
+
+1. **Log della conversazione PER-MESSAGGIO, non una riga per turno.** Tabella `conversazione_messaggi`
+   (`ruolo` utente/assistente/esito, `contenuto`, `passi` jsonb solo sull'assistente, `created_at`).
+   Motivo: un turno può avere più cose (testo + passi + esito di un'azione che parte *dopo*), e la
+   forma per-messaggio regge già la Tappa 7.4 (una scheda `data_presented` diventa un messaggio con
+   `tipo`+`payload`). Supera la forma "riga-per-turno" proposta allo STOP 1 iniziale (mai spedita: la
+   migration `20260729120000` fa `drop table if exists conversazione_turni`). Ordine utente→assistente
+   garantito con `created_at` esplicito a 1ms di distanza (il default `now()` li lascerebbe pari).
+
+2. **Il record vive nell'Orchestratore (`orchestratore/conversazione.py`), non nell'interfaccia.**
+   Non lo scrive solo la UI web: l'**esito** di un'azione ("Mail inviata a …") lo scrive
+   `azioni.conferma_azione` — il **punto unico da cui passa ogni conferma** (web/CLI/voce) — così
+   l'esito entra nella cronologia da qualunque canale. `conferma_azione` ritorna anche `esito` nel
+   payload, e la UI web lo appende subito senza refetch. Il testo dell'esito è in
+   `descrizioni_azioni.esito_azione` (frase al passato), fratello di `descrivi_azione` (scheda
+   pending): stessa casa, informazione diversa. La scrittura della cronologia è **resiliente** (se
+   il DB è giù la chat non muore: si logga e si prosegue), sia in lettura che in scrittura.
+
+3. **Una sola superficie conversazione, "ambient", in basso — non barra(in alto)+log(in mezzo)
+   separati.** Osservazione del founder: barra (testo) e log azioni (passi) erano due viste
+   transitorie dello stesso turno in due posti, e la cronologia è la stessa cosa persistita. Fuse in
+   **una** superficie sopra l'input (larga quanto il pannello di scrittura):
+   - **dialogo (default)**: passi come **processo dal vivo** (stile Claude Code) + testo, traslucidi;
+     un nuovo turno **si accoda** (flusso continuo, non un reset), le righe vecchie scorrono su e
+     sfumano; si tengono ~le ultime 4 righe, a riposo restano ma più discrete (qualcosa si vede
+     sempre — l'essere resta il baricentro: *si dialoga, non si legge*);
+   - **lettura (espansa)**: cronologia a contrasto pieno, azioni **inline** (niente "espandi"),
+     l'essere **arretra dolce** (non sparisce). Aprendo a metà esecuzione il turno in corso si vede
+     dal vivo in coda. Stessa inversione servirà alla modalità silenziosa della voce (7.5).
+   A "far arretrare" il testo pensano **quante righe** si vedono e la posizione, non l'opacità tarata
+   a occhio (più robusto tra monitor, più accessibile). Supera bar/log separati di 7.1–7.2 (la forma
+   degli eventi di streaming resta invariata; è cambiata solo la resa client).
+
+4. **La migration è stata applicata al progetto remoto** (`supabase db push`, unica pendente) come
+   parte dello STOP 2 — il founder ha provato la persistenza reale (refresh + riavvio server).
+
+**Alternative considerate**: tenere testo-only per-turno e rimandare esito/passi (scartata: lascia
+turni "che pendono" nella cronologia, e la tabella nuova/vuota costava zero cambiarla ora); ancorare
+la superficie in alto (barra→cronologia, più fedele al mockup v1) o lasciarla separata (scartate a
+favore dell'unica in basso, validate su skeleton ASCII col founder); persistere i turni nel
+choke-point condiviso `agente.turno` per coprire anche la voce CLI (scartata: accoppierebbe il
+motore alla persistenza e salverebbe turni che nessuna UI mostra oggi — la voce si aggancia a questa
+superficie in 7.5).
+
+**Verifica**: 355 test verdi (`test_conversazione.py` nuovo — anti-leak, ordine, bound, passi sul
+messaggio giusto; `test_sessione_web` esteso — evento `storico`/`messaggi`, salvataggio solo su
+turno riuscito, degrado resiliente; `test_azioni` — esito scritto alla conferma; `test_descrizioni_azioni`
+— `esito_azione`). Frontend verificato a mano dal founder sul server reale (login, streaming,
+processo azioni, invio mail con esito, cronologia dopo refresh e riavvio). I numeri fini (traslucenza,
+secondi, quanto arretra l'essere) restano ritoccabili in 7.6.
+
+**Scoperto durante lo STOP 2, rimandato**: manca un tool per **cercare/sfogliare la inbox Gmail
+live** (oggi solo `search_memoria`, semantica e solo sulle mail *importate*). È un buco del
+connettore Gmail rispetto allo standard "connettore completo" (CLAUDE.md), non della UI — annotato
+in ROADMAP.md come arretrato, da affrontare in una sessione Orchestratore dedicata.

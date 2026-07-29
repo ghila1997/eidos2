@@ -256,11 +256,19 @@ resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
   Rifiniture visive rimandate a 7.6 (design v1 come stella polare). Dettaglio in
   [docs/interfaccia_utente/README.md](docs/interfaccia_utente/README.md).
 
-**Tappa 7.3 — Barra ↔ cronologia unificata + persistenza**
-- La superficie conversazione: la barra di trascrizione in alto **si espande in cronologia**
-  (colonna sfumata, niente pannello separato — vedi DECISIONS.md). **Persistenza** dello storico
-  conversazioni cross-sessione per tenant (il backend salva/recupera i turni).
-- **Finito quando**: dopo un refresh la cronologia c'è ancora; espandere/richiudere la barra funziona.
+**Tappa 7.3 — Superficie conversazione unica (ambient) + cronologia persistente** — ✅ fatto (2026-07-29)
+- Fuse barra + log azioni + cronologia in **una** superficie "ambient" in basso (larga quanto
+  l'input): dialogo traslucido a flusso continuo (passi come processo dal vivo, stile Claude Code),
+  che si espande in cronologia a contrasto pieno con l'essere che arretra. Persistenza **per-messaggio**
+  (utente/assistente/esito, coi passi del turno) per tenant, in `orchestratore/conversazione.py`;
+  l'**esito** di un'azione lo scrive `conferma_azione` (punto unico per ogni canale). Cresciuta oltre
+  la fetta iniziale (esito + processo + feel "dialogo non lettura") rivalidando col founder — vedi
+  DECISIONS.md 2026-07-29.
+- **Finito quando**: dopo un refresh (e dopo un riavvio server) la cronologia c'è ancora;
+  espandere/richiudere funziona; l'esito delle azioni entra nella cronologia — ✅ verificato
+  2026-07-29 sul server reale (login founder, migration applicata al remoto, invio mail reale con
+  esito, cronologia persistente). Rifiniture dei numeri (traslucenza, tempi, arretramento essere) e
+  markdown/PWA restano 7.6.
 
 **Tappa 7.4 — Schede grafiche (`data_presented`)**
 - Renderer client completo (lista/tabella/evento/luogo/grafico/scheda), trascinabili e chiudibili;
@@ -419,6 +427,13 @@ più "dimenticate silenziosamente"
 
 ## Esplicitamente rimandato
 
+- **Ricerca/sfoglio della inbox Gmail live** (arretrato Connettori, scoperto 2026-07-29 provando 7.3):
+  oggi l'agente ha `search_memoria` (semantica, **solo sulle mail importate** — sottoinsieme filtrato,
+  Tappa 2) ma **nessun tool per cercare/elencare la casella Gmail reale** (per query/mittente/periodo).
+  Effetto collaterale: `reply`/`forward`/`trash` vogliono un `message_id` che oggi arriva solo dalle
+  mail importate — una mail non importata non è raggiungibile. È un buco rispetto allo standard
+  "connettore completo" (CLAUDE.md), materia Orchestratore/Connettori, non UI — da fare in sessione
+  dedicata con i suoi STOP, non dentro un altro ciclo.
 - **Latenza al primo token LLM** (Tappa 6, Voce): 2,4-4,8s su turni semplici, oltre 10s con una
   tool call reale — variabilità non eliminata da incr.3 (8-12s→2,5-6s). È latenza Orchestratore,
   non di Voce; il `ponte` la maschera ma non la risolve. Da riprendere in una sessione dedicata

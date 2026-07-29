@@ -129,23 +129,118 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
    sopra hanno z-index piu' alto e restano cliccabili. */
 #essere-vivente { width: 100%; height: 100%; border: 0; background: transparent; }
 
-/* barra risposta: in alto, monospace, discreta con auto-fade. In 7.1 la
-   risposta in streaming si legge qui (la cronologia espandibile e' 7.3):
-   avvolge fino a poche righe invece di clippare a una riga sola. */
-#transcript-bar {
-  position: absolute; left: 50%; top: 7vh; transform: translateX(-50%);
-  max-width: min(92vw, 560px); width: 90%;
-  text-align: center;
-  font-family: 'Space Mono', ui-monospace, monospace;
-  font-size: 13.5px; line-height: 1.5; letter-spacing: 0.01em;
-  color: rgba(238, 241, 255, 0.66);
-  z-index: 4; min-height: 1.4em;
-  max-height: 6.5em; overflow: hidden;
-  transition: opacity 0.8s;
+/* ---------- superficie conversazione UNICA (7.3) ----------
+   In basso, sopra l'input e larga quanto il pannello di scrittura. Ambient
+   (dialogo): passi + testo traslucidi che a riposo si spengono DEL TUTTO
+   (l'essere resta il baricentro - si dialoga, non si legge). Espansa (lettura):
+   cronologia a contrasto pieno, con le azioni mostrate INLINE come processo
+   (stile Claude Code), non dietro un espandi. */
+#convo {
+  position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%);
+  width: min(92vw, 560px); z-index: 4;
+  display: flex; flex-direction: column; align-items: stretch;
 }
-#transcript-bar.idle { opacity: 0.28; }
-#transcript-bar .ghost { color: rgba(238, 241, 255, 0.32); }
-#transcript-bar .err { color: var(--danger); }
+#convo-toggle {
+  align-self: center; margin-bottom: 6px; width: 30px; height: 20px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--muted); font-size: 12px; line-height: 1;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--panel-border);
+  opacity: 0.6; transition: 0.25s;
+}
+#convo-toggle:hover { opacity: 1; color: var(--text); background: var(--panel); }
+#convo-toggle .chev { display: inline-block; transition: transform 0.25s; }
+#convo.open #convo-toggle .chev { transform: rotate(180deg); }
+
+/* AMBIENT (dialogo): tiene sempre le ultime ~4 righe (le più vecchie scorrono
+   su e sfumano). A riposo (.settled) restano, solo più discrete: qualcosa si
+   vede sempre. Hover -> pieno. Un filo di traslucenza resta (dialogo). */
+#ambient {
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 5px;
+  max-height: 92px; overflow: hidden; padding: 0 4px; cursor: pointer;
+  opacity: 0.82; transition: opacity 0.6s;
+  -webkit-mask-image: linear-gradient(to top, #000 56%, transparent);
+  mask-image: linear-gradient(to top, #000 56%, transparent);
+}
+#convo:not(.open) #ambient:hover { opacity: 1; }
+#convo.settled #ambient { opacity: 0.5; }
+#convo.open #ambient { display: none; }
+
+.amb-steps { display: flex; flex-direction: column; gap: 2px; }
+.amb-step {
+  font-family: 'Space Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.6;
+  color: var(--text-secondary); animation: ambin 0.35s both;
+}
+.amb-step .tick { color: var(--accent); margin-right: 7px; }
+.amb-step.run .tick { animation: pulseDot 1s ease-in-out infinite; }
+.amb-step.done .tick { color: #7fe8b0; }
+.amb-step.errore, .amb-step.errore .tick { color: var(--danger); }
+.amb-say {
+  font-family: 'Space Mono', ui-monospace, monospace; font-size: 14px; line-height: 1.55;
+  letter-spacing: 0.01em; color: var(--text); margin-top: 2px; white-space: pre-wrap; word-break: break-word;
+}
+.amb-say.ghost { color: rgba(238, 241, 255, 0.3); }
+.amb-say.err { color: var(--danger); }
+/* eco discreta del messaggio dell'utente: apre il blocco del turno nel flusso */
+.amb-user {
+  font-family: 'Space Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+  color: var(--accent); margin-top: 4px; white-space: pre-wrap; word-break: break-word;
+  animation: ambin 0.35s both;
+}
+.amb-esito {
+  font-family: 'Space Mono', ui-monospace, monospace; font-size: 12px; color: #7fe8b0;
+  margin-top: 3px; animation: ambin 0.35s both;
+}
+.amb-esito .k { margin-right: 6px; font-weight: 700; }
+@keyframes ambin { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+/* READING (cronologia espansa): la STESSA superficie che si allunga, non un
+   pannello che sbuca. Fondo leggero (si intravede la scena), bordi che si
+   dissolvono (mask), entrata sfumata. Il testo resta a colore pieno: la
+   leggibilità viene dal contrasto del testo, non da una lastra opaca. */
+#history {
+  display: none; max-height: 54vh; overflow-y: auto; padding: 20px 18px; border-radius: 16px;
+  background: rgba(10, 12, 28, 0.5); backdrop-filter: blur(9px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 92%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 8%, #000 92%, transparent);
+}
+#convo.open #history { display: block; animation: histin 0.35s ease both; }
+@keyframes histin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+#history::-webkit-scrollbar { width: 7px; }
+#history::-webkit-scrollbar-thumb { background: rgba(150, 165, 255, 0.18); border-radius: 4px; }
+.history-empty { color: var(--muted); font-size: 12.5px; text-align: center; }
+
+.turn { padding: 10px 0; border-bottom: 1px solid rgba(150, 165, 255, 0.07); }
+.turn:last-child { border-bottom: 0; }
+.turn .who {
+  display: block; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase;
+  margin-bottom: 4px; color: var(--muted);
+}
+.turn .msg { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.turn.user .who { color: var(--accent); }
+.turn.user .msg { color: var(--text); }
+.turn.assistant .msg { color: var(--text-secondary); }
+/* azioni INLINE come processo (niente espandi), stile Claude Code */
+.passi-inline { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.passi-inline .passo {
+  font-family: 'Space Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.6; color: var(--muted);
+}
+.passi-inline .passo .tick { color: #7fe8b0; margin-right: 7px; }
+.passi-inline .passo.errore, .passi-inline .passo.errore .tick { color: var(--danger); }
+.passi-inline .passo.run .tick { color: var(--accent); animation: pulseDot 1s ease-in-out infinite; }
+.turn .msg.ghost { color: rgba(238, 241, 255, 0.3); }
+.live-tail { opacity: 0.96; }
+/* esito azione: riga a sé nel flusso della cronologia */
+.esito-riga {
+  margin: 8px 0; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text);
+  padding: 6px 11px; border-radius: 9px;
+  background: rgba(127, 232, 176, 0.10); border: 1px solid rgba(127, 232, 176, 0.22);
+}
+.esito-riga .k { color: #7fe8b0; font-weight: 700; }
+
+/* Modalità LETTURA (cronologia aperta) — e in futuro modalità silenziosa (voce,
+   7.5): l'essere arretra DOLCE (resta presente, non sparisce) mentre la
+   cronologia passa in primo piano. Quanto arretra è da tarare a mano (STOP 2). */
+body.convo-open #essere-vivente-wrap { filter: blur(5px); opacity: 0.4; transition: filter 0.5s, opacity 0.5s; }
 
 #controls {
   position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -182,24 +277,6 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 #conn-status[data-stato="offline"] { color: var(--danger); }
 #conn-status[data-stato="offline"] .dot { background: var(--danger); box-shadow: 0 0 8px var(--danger); animation: none; }
 @keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-/* ---------- log azioni dal vivo (7.2) ---------- */
-#actions-log {
-  position: absolute; left: 50%; top: 40vh; bottom: 120px; transform: translateX(-50%);
-  width: min(90vw, 520px); z-index: 3;
-  display: flex; flex-direction: column; justify-content: flex-end; gap: 3px;
-  overflow: hidden; font-size: 12px;
-  font-family: 'Space Mono', ui-monospace, monospace;
-  pointer-events: none;
-  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent 100%);
-  mask-image: linear-gradient(to top, #000 55%, transparent 100%);
-}
-.log-row { padding: 2px 0; color: var(--text-secondary); animation: logfade 0.4s both; }
-.log-row .tick { color: var(--accent); margin-right: 7px; }
-.log-row.done .tick { color: #7fe8b0; }
-.log-row.errore { color: var(--danger); }
-.log-row.errore .tick { color: var(--danger); }
-@keyframes logfade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* ---------- gate di conferma: scheda "formato mail" (7.2) ---------- */
 #confirm-box {
