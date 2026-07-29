@@ -123,7 +123,8 @@ async def test_esegui_tentativo_traduce_tool_in_corso_senza_prefisso_mcp(monkeyp
     coda = asyncio.Queue()
     await _esegui_tentativo(motore, "impegni?", tentativo_id=1, coda=coda, tenant_id="t1")
     eventi = await _svuota_coda(coda)
-    assert {"evento": "tool_in_corso", "tool": "search_events"} in [e[2] for e in eventi]
+    tool_eventi = [e[2] for e in eventi if e[2]["evento"] == "tool_in_corso"]
+    assert tool_eventi and tool_eventi[0]["tool"] == "search_events"
 
 
 @pytest.mark.asyncio

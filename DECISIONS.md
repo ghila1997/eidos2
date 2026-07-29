@@ -1451,3 +1451,64 @@ reale + streaming + essere) allo STOP 2 del founder.
 **Esplicitamente fuori scope di questa fetta** (dichiarato, non tagliato): tutto ciò che è
 elencato come 7.2–7.6 in ROADMAP.md; login multi-provider e login-dev (presenti nel markup ma
 nascosti fino a Tappa 8).
+
+## 2026-07-29 — Tappa 7.2: trasparenza (log azioni, gate di conferma visivo, spia connessione)
+
+**Contesto**: seconda fetta verticale della Tappa 7. Rendere visibile ciò che l'assistente fa
+(tool in corso), confermabile ciò che scrive fuori (scheda Sì/No), e non-silenzioso lo stato di
+rete — le tre cose che la v1 sbagliava (falliva in silenzio). Vedi ROADMAP.md 7.2.
+
+**Decisioni prese:**
+
+1. **Descrizione di un'azione pending = fonte unica sul server** (`orchestratore/descrizioni_azioni.py`).
+   La logica "che aspetto ha un'azione da confermare" viveva nel CLI (`cli._descrivi_azione`); ora
+   sta sul server e restituisce una struttura generica `{icona, titolo, riepilogo, dettagli, corpo}`,
+   allegata al payload esposto (`/chat`, 409, eventi WS `fine`/`azione_in_attesa`). Il CLI e la UI
+   web la **formattano**, non la ricalcolano (CLAUDE.md "ogni informazione vive in un punto solo").
+   Il CLI resta un client HTTP sottile: **non** importa il modulo del server (violerebbe la sua
+   deployabilità standalone) — consuma la descrizione via HTTP. La UI rende `dettagli` come righe e
+   `corpo` come blocco: per una mail viene "formato mail" senza codice ad hoc per tipo.
+
+2. **Log azioni: `tool_finito` accoppiato per `id` a `tool_in_corso`** (in `streaming.py`, condiviso
+   con la voce). `tool_in_corso` ora porta `id` + `etichetta` leggibile (mappa nome→frase, fallback
+   sul nome pulito); `tool_finito` (`ok`/`errore`) si ricava dal `ToolResultBlock` di una
+   `UserMessage` — è il segnale che il tool ha *eseguito*, diverso da `content_block_stop` (che marca
+   solo la fine della richiesta del modello). Così il log chiude la riga invece di lasciarla "in
+   corso" per sempre. La voce ignora il nuovo evento (anti-regressione coperta dai test).
+
+3. **409/azione pendente reso come scheda, non come errore.** In `sessione_web.py` un'azione già in
+   attesa non manda più un evento `errore` (com'era in 7.1) ma un evento `azione_in_attesa` con la
+   descrizione → la UI mostra la stessa scheda di conferma. Coerente col comportamento 409 del CLI.
+   Lo stato vive su `azioni_pending` (server), non nel browser: refresh/riconnessione ri-mostrano la
+   stessa scheda, mai due impilate (una sola pendente per tenant, invariato da Tappa 2).
+
+4. **Scadenza delle azioni pending: TTL 1h *pigra*, senza job né migration** (decisione presa allo
+   STOP 1 col founder). Una scheda lasciata lì non deve poter partire ore dopo, quando il contesto
+   non c'è più. `azione_scaduta` confronta `created_at` con `now` (costante `TTL_AZIONE` nel codice,
+   nessuna colonna nuova); un "Sì" su un'azione scaduta torna stato `scaduta` e **non esegue**;
+   `azione_bloccante` marca `scaduta` una pendente vecchia e non blocca più la chat. Nessuno
+   scheduler: il job di scadenza vero è materia di Tappa 10 (Attese). Alternativa scartata: nessuna
+   scadenza (rischio staleness) e scadenza con job in background (over-engineering per un solo utente).
+
+5. **Conferma dalla UI via l'endpoint HTTP esistente `/azioni/{id}/conferma`, non un nuovo canale WS.**
+   L'azione è già stata preparata dal tool durante il turno; la conferma non ha bisogno dello
+   streaming. La scheda web fa una `fetch()` POST allo stesso endpoint che usa il CLI — nessuna
+   logica di autorizzazione duplicata (CLAUDE.md, Safety/gate unico).
+
+6. **Spia connessione con auto-riconnessione a backoff.** In 7.1 il WS si riconnetteva solo al
+   prossimo invio; ora indicatore persistente online/riconnessione/offline, backoff esponenziale
+   1s→15s alla caduta, reazione agli eventi `online`/`offline` del browser. Un turno perso durante
+   la caduta viene dichiarato (il motore server-side non lo riemette) invece di sparire in silenzio.
+
+**Verifica**: 337 test automatici verdi (+ nuovi `test_descrizioni_azioni.py`, `test_streaming.py`,
+`test_router_chat.py`; `test_azioni`/`test_sessione_web`/`test_cli` estesi; i vocali invariati).
+Verifica end-to-end **sul server reale** (motore Anthropic/Supabase/Gmail veri, login founder):
+turno reale con log `tool_in_corso`("Cerco nella memoria")→`tool_finito`, scheda formato mail con
+descrizione dal server, 409-come-scheda su WS, conferma rifiutata, scadenza TTL — **nessuna mail
+inviata** nel test (sempre rifiutata o scaduta). Trappola trovata provando la UI: la riga "Vuoi
+procedere?" si confondeva col corpo della mail → corpo incorniciato, domanda smorzata (fix di
+leggibilità; le rifiniture visive vere restano Tappa 7.6, design v1 come stella polare).
+
+**Esplicitamente fuori scope di questa fetta**: cronologia/persistenza (7.3), schede grafiche
+`data_presented` (7.4), voce/mic nel browser (7.5), markdown/PWA/accessibilità curata e rifiniture
+grafiche (7.6).

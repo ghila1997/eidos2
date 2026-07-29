@@ -86,6 +86,7 @@ def _fake_motore_per(monkeypatch):
 
     monkeypatch.setattr(agente, "motore_per", fake_motore_per)
     monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", nessuna_azione_pendente)
+    monkeypatch.setattr(azioni, "azione_bloccante", nessuna_azione_pendente)
     return motori
 
 
@@ -119,7 +120,9 @@ async def test_tool_in_corso_senza_prefisso_mcp(_fake_motore_per):
 
     await gestisci_sessione("t1", ricevi, invia)
 
-    assert {"evento": "tool_in_corso", "tool": "search_events"} in invia.eventi
+    tool_eventi = [e for e in invia.eventi if e["evento"] == "tool_in_corso"]
+    assert tool_eventi and tool_eventi[0]["tool"] == "search_events"
+    assert tool_eventi[0]["etichetta"] == "Cerco nel calendario"
 
 
 async def test_due_messaggi_sulla_stessa_connessione(_fake_motore_per):
@@ -183,11 +186,15 @@ async def test_errore_non_chiude_la_sessione(_fake_motore_per):
     assert tipi == ["errore", "fine"]
 
 
-async def test_azione_pendente_blocca_il_turno(monkeypatch, _fake_motore_per):
+async def test_azione_pendente_diventa_scheda_non_errore(monkeypatch, _fake_motore_per):
+    """Tappa 7.2: con un'azione già in attesa non parte un nuovo turno e il
+    client riceve la **scheda** di conferma (evento azione_in_attesa con
+    descrizione leggibile), non un errore rosso."""
     async def azione_pendente(tenant_id):
-        return {"id": "az-1", "tipo": "send_email", "payload": {}}
+        return {"id": "az-1", "tipo": "send_email",
+                "payload": {"destinatario": "x@y.it", "oggetto": "Ciao", "corpo": "Testo"}}
 
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", azione_pendente)
+    monkeypatch.setattr(azioni, "azione_bloccante", azione_pendente)
     motore = FakeMotore([[_result("mai chiamato")]])
     _fake_motore_per["t1"] = motore
     ricevi = RicevitoreScriptato([{"tipo": "messaggio", "testo": "manda la mail"}])
@@ -195,7 +202,9 @@ async def test_azione_pendente_blocca_il_turno(monkeypatch, _fake_motore_per):
 
     await gestisci_sessione("t1", ricevi, invia)
 
-    assert invia.eventi[0]["evento"] == "errore"
+    assert invia.eventi[0]["evento"] == "azione_in_attesa"
+    assert invia.eventi[0]["azione"]["id"] == "az-1"
+    assert invia.eventi[0]["azione"]["descrizione"]["titolo"] == "Invio email"
     assert motore.testi_ricevuti == []  # nessun turno avviato
 
 

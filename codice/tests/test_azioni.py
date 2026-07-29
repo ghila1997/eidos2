@@ -1,5 +1,7 @@
 """Trappola centrale della Tappa 2: send_email non deve mai inviare senza
 conferma esplicita, e la conferma deve restare scoped al tenant giusto."""
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
@@ -16,20 +18,19 @@ PAYLOAD = {"destinatario": "x@example.com", "oggetto": "Ciao", "corpo": "Testo"}
 def _mock_azione(
     respx_mock, tenant_id: str, stato: str = azioni.STATO_IN_ATTESA,
     tipo: str = azioni.TIPO_SEND_EMAIL, payload: dict | None = None,
+    created_at: str | None = None,
 ):
+    riga = {
+        "id": AZIONE_ID,
+        "tenant_id": tenant_id,
+        "tipo": tipo,
+        "payload": payload if payload is not None else PAYLOAD,
+        "stato": stato,
+    }
+    if created_at is not None:
+        riga["created_at"] = created_at
     respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {
-                    "id": AZIONE_ID,
-                    "tenant_id": tenant_id,
-                    "tipo": tipo,
-                    "payload": payload if payload is not None else PAYLOAD,
-                    "stato": stato,
-                }
-            ],
-        )
+        return_value=httpx.Response(200, json=[riga])
     )
 
 
@@ -461,6 +462,69 @@ async def test_conferma_propose_commitment_duplicato_non_riscrive(respx_mock, mo
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiamato["si"] is False
+
+
+def _ts(delta: timedelta) -> str:
+    return (datetime.now(timezone.utc) + delta).isoformat()
+
+
+def test_azione_scaduta_vera_solo_oltre_ttl():
+    fresca = {"created_at": _ts(-timedelta(minutes=30))}
+    vecchia = {"created_at": _ts(-timedelta(hours=2))}
+    assert azioni.azione_scaduta(fresca) is False
+    assert azioni.azione_scaduta(vecchia) is True
+
+
+def test_azione_scaduta_senza_created_at_non_scade():
+    """Un payload di test senza timestamp non deve mai risultare scaduto -
+    la scadenza è una rete di sicurezza, non un default aggressivo."""
+    assert azioni.azione_scaduta({}) is False
+
+
+@pytest.mark.asyncio
+async def test_conferma_si_su_azione_scaduta_non_invia(respx_mock, monkeypatch):
+    """Un 'Sì' su una scheda più vecchia di un'ora non spedisce nulla: torna
+    stato 'scaduta' e va richiesta di nuovo (decisione STOP 1, Tappa 7.2)."""
+    _mock_azione(respx_mock, TENANT_A, created_at=_ts(-timedelta(hours=2)))
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    invio_chiamato = False
+
+    async def fake_invia(*args, **kwargs):
+        nonlocal invio_chiamato
+        invio_chiamato = True
+
+    monkeypatch.setattr(gmail_client, "invia_messaggio", fake_invia)
+
+    risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
+
+    assert risultato["stato"] == azioni.STATO_SCADUTA
+    assert invio_chiamato is False
+
+
+@pytest.mark.asyncio
+async def test_azione_bloccante_ignora_e_marca_una_pendente_scaduta(respx_mock):
+    """Scadenza pigra: una pendente scaduta viene marcata 'scaduta' e non
+    blocca più - la nuova richiesta può procedere."""
+    _mock_azione(respx_mock, TENANT_A, created_at=_ts(-timedelta(hours=3)))
+    patch = respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    bloccante = await azioni.azione_bloccante(TENANT_A)
+
+    assert bloccante is None
+    assert patch.called  # marcata scaduta
+
+
+@pytest.mark.asyncio
+async def test_azione_bloccante_ritorna_una_pendente_fresca(respx_mock):
+    _mock_azione(respx_mock, TENANT_A, created_at=_ts(-timedelta(minutes=5)))
+
+    bloccante = await azioni.azione_bloccante(TENANT_A)
+
+    assert bloccante is not None
+    assert bloccante["id"] == AZIONE_ID
 
 
 @pytest.mark.asyncio

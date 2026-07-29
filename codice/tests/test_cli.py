@@ -1,72 +1,71 @@
-"""Trappola trovata testando Tappa 4 a mano: _mostra_conferma assumeva
-payload sempre di forma Gmail (destinatario/oggetto/corpo) e andava in
-KeyError su un'azione pending di tipo Calendar (titolo/event_id/...)."""
+"""Il CLI non ricalcola più la descrizione dell'azione (Tappa 7.2): la
+formatta a partire dalla `descrizione` che il server allega, fonte unica per
+CLI e web. Qui si costruisce quella descrizione con la funzione vera del
+server, così i due restano allineati per costruzione."""
 import json
 
 import httpx
 
 import cli
 from cli import _descrivi_azione, _interpreta_risposta
+from orchestratore.descrizioni_azioni import descrivi_azione
+
+
+def _azione(tipo: str, payload: dict) -> dict:
+    """Un'azione come la manda il server: tipo/payload + descrizione allegata."""
+    az = {"tipo": tipo, "payload": payload}
+    az["descrizione"] = descrivi_azione(az)
+    return az
 
 
 def test_descrivi_azione_send_email():
-    azione = {"tipo": "send_email", "payload": {"destinatario": "x@example.com", "oggetto": "Ciao", "corpo": "Testo"}}
-    assert "x@example.com" in _descrivi_azione(azione)
-    assert "Ciao" in _descrivi_azione(azione)
+    azione = _azione("send_email", {"destinatario": "x@example.com", "oggetto": "Ciao", "corpo": "Testo"})
+    reso = _descrivi_azione(azione)
+    assert "x@example.com" in reso
+    assert "Ciao" in reso
+    assert "Testo" in reso
 
 
 def test_descrivi_azione_create_event_con_partecipanti():
-    azione = {
-        "tipo": "create_event",
-        "payload": {
-            "titolo": "Riunione", "inizio": "2026-07-20T10:00:00Z", "fine": "2026-07-20T11:00:00Z",
-            "partecipanti": ["cliente@example.com"],
-        },
-    }
-    descrizione = _descrivi_azione(azione)
-    assert "Riunione" in descrizione
-    assert "cliente@example.com" in descrizione
+    azione = _azione("create_event", {
+        "titolo": "Riunione", "inizio": "2026-07-20T10:00:00Z", "fine": "2026-07-20T11:00:00Z",
+        "partecipanti": ["cliente@example.com"]})
+    reso = _descrivi_azione(azione)
+    assert "Riunione" in reso
+    assert "cliente@example.com" in reso
 
 
 def test_descrivi_azione_delete_event_non_solleva_keyerror():
-    """Trappola esatta trovata a mano: payload senza 'oggetto'/'corpo' non
-    deve più far esplodere la funzione."""
-    azione = {"tipo": "delete_event", "payload": {"event_id": "evt-1", "notifica": True, "calendario": None}}
+    """Trappola storica (Tappa 4): payload senza 'oggetto'/'corpo' non deve
+    far esplodere la formattazione."""
+    azione = _azione("delete_event", {"event_id": "evt-1", "notifica": True, "calendario": None})
     assert "evt-1" in _descrivi_azione(azione)
 
 
 def test_descrivi_azione_propose_commitment():
-    """Trappola: deve leggersi come frase naturale (come tutti gli altri
-    tipi), non come il fallback grezzo 'azione di tipo ...: {payload}'."""
-    azione = {
-        "tipo": "propose_commitment",
-        "payload": {
-            "entity_nome": "Isagro",
-            "descrizione": "Restituire pagamento doppio fattura 725FE",
-            "direzione": "nostro",
-        },
-    }
-    descrizione = _descrivi_azione(azione)
-    assert "Isagro" in descrizione
-    assert "Restituire pagamento doppio fattura 725FE" in descrizione
-    assert "{" not in descrizione
-    assert "azione di tipo" not in descrizione
+    azione = _azione("propose_commitment", {
+        "entity_nome": "Isagro", "descrizione": "Restituire pagamento doppio fattura 725FE",
+        "direzione": "nostro"})
+    reso = _descrivi_azione(azione)
+    assert "Isagro" in reso
+    assert "Restituire pagamento doppio fattura 725FE" in reso
+    assert "{" not in reso
+    assert "azione di tipo" not in reso
 
 
 def test_descrivi_azione_close_commitment():
-    azione = {
-        "tipo": "close_commitment",
-        "payload": {"impegno_id": "impegno-1", "motivo": "bonifico restituito il 22/07"},
-    }
-    descrizione = _descrivi_azione(azione)
-    assert "impegno-1" in descrizione
-    assert "bonifico restituito il 22/07" in descrizione
-    assert "{" not in descrizione
+    azione = _azione("close_commitment", {"impegno_id": "impegno-1", "motivo": "bonifico restituito il 22/07"})
+    reso = _descrivi_azione(azione)
+    assert "impegno-1" in reso
+    assert "bonifico restituito il 22/07" in reso
+    assert "{" not in reso
 
 
-def test_descrivi_azione_tipo_sconosciuto_non_esplode():
-    azione = {"tipo": "qualcosa_di_nuovo", "payload": {"x": 1}}
-    assert "qualcosa_di_nuovo" in _descrivi_azione(azione)
+def test_descrivi_azione_senza_descrizione_fallback_minimale():
+    """Difesa: un server vecchio che non allega descrizione non deve rompere
+    il CLI - fallback su una riga col tipo."""
+    reso = _descrivi_azione({"tipo": "qualcosa_di_nuovo", "payload": {"x": 1}})
+    assert "qualcosa_di_nuovo" in reso
 
 
 def test_interpreta_risposta_affermative():

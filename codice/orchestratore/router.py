@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from fondamenta.auth import get_sessione_corrente
 
 from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, turno_vocale, voce_token
+from .descrizioni_azioni import descrivi_azione
 
 router = APIRouter()
 
@@ -31,7 +32,9 @@ class ConfermaRequest(BaseModel):
 
 
 async def _blocca_se_azione_pendente(tenant_id: str) -> None:
-    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+    # `azione_bloccante` scarta da sola una pendente scaduta (TTL pigra, Tappa
+    # 7.2): una scheda dimenticata non tiene la chat bloccata per sempre.
+    azione_pendente = await azioni.azione_bloccante(tenant_id)
     if azione_pendente is not None:
         raise HTTPException(
             status_code=409,
@@ -40,6 +43,7 @@ async def _blocca_se_azione_pendente(tenant_id: str) -> None:
                 "azione_id": azione_pendente["id"],
                 "tipo": azione_pendente["tipo"],
                 "payload": azione_pendente["payload"],
+                "descrizione": descrivi_azione(azione_pendente),
             },
         )
 
@@ -58,6 +62,8 @@ async def chat(body: ChatRequest, request: Request):
                 pezzi.append(message.result)
 
     azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+    if azione_appena_creata is not None:
+        azione_appena_creata["descrizione"] = descrivi_azione(azione_appena_creata)
     return {
         "risposta": "\n".join(pezzi),
         "azione_in_attesa": azione_appena_creata,

@@ -15,16 +15,9 @@ import logging
 from typing import Awaitable, Callable
 
 from orchestratore import agente, azioni, streaming
+from orchestratore.descrizioni_azioni import descrivi_azione
 
 logger = logging.getLogger(__name__)
-
-# In 7.1 il gate di conferma visivo (scheda Si'/No) e' ancora Tappa 7.2:
-# qui un'azione gia' in attesa blocca il turno con un messaggio leggibile,
-# senza crash e senza confermare nulla di implicito (stesso gate del turno
-# vocale, stesso principio CLAUDE.md - un solo punto di autorizzazione).
-MESSAGGIO_AZIONE_PENDENTE = (
-    "C'e' un'azione in attesa di conferma, risolvila prima di continuare."
-)
 
 
 class ConnessioneChiusa(Exception):
@@ -53,9 +46,14 @@ async def gestisci_sessione(
         if not testo:
             continue
 
-        azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+        # Se c'è già un'azione da confermare, non si avvia un nuovo turno: si
+        # rimanda al client la **scheda** di quell'azione (Tappa 7.2), non un
+        # errore rosso. `azione_bloccante` scarta da sola una pendente scaduta
+        # (TTL pigra), così una scheda dimenticata non blocca la chat.
+        azione_pendente = await azioni.azione_bloccante(tenant_id)
         if azione_pendente is not None:
-            await invia({"evento": "errore", "messaggio": MESSAGGIO_AZIONE_PENDENTE})
+            azione_pendente["descrizione"] = descrivi_azione(azione_pendente)
+            await invia({"evento": "azione_in_attesa", "azione": azione_pendente})
             continue
 
         try:

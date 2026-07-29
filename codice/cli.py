@@ -60,42 +60,23 @@ def _assicura_sessione(client: httpx.Client) -> None:
 
 
 def _descrivi_azione(azione: dict) -> str:
-    """Un'azione pending può essere di tipo Gmail o Calendar (Tappa 4),
-    payload diversi tra loro - niente di comune da assumere oltre a `tipo`."""
-    tipo = azione["tipo"]
-    payload = azione["payload"]
-    if tipo == "send_email":
-        return f"invio a {payload['destinatario']}, oggetto '{payload['oggetto']}':\n{payload['corpo']}"
-    if tipo == "reply_email":
-        return f"risposta al messaggio {payload['message_id']}:\n{payload['corpo']}"
-    if tipo == "forward_email":
-        return f"inoltro del messaggio {payload['message_id']} a {payload['destinatario']}"
-    if tipo == "send_draft":
-        return f"invio della bozza {payload['draft_id']}"
-    if tipo == "trash_email":
-        return f"spostamento nel cestino del messaggio {payload['message_id']}"
-    if tipo == "create_event":
-        partecipanti = ", ".join(payload.get("partecipanti") or [])
-        return (
-            f"creazione evento '{payload['titolo']}' ({payload['inizio']} - {payload['fine']}), "
-            f"partecipanti: {partecipanti}"
-        )
-    if tipo == "update_event":
-        return f"modifica dell'evento {payload['event_id']}"
-    if tipo == "delete_event":
-        return f"cancellazione dell'evento {payload['event_id']}"
-    if tipo == "propose_commitment":
-        return (
-            f"impegno su {payload['entity_nome']} ({payload['direzione']}): "
-            f"{payload['descrizione']}"
-        )
-    if tipo == "close_commitment":
-        return f"chiusura impegno {payload['impegno_id']}: {payload['motivo']}"
-    return f"azione di tipo '{tipo}': {payload}"
+    """Rende leggibile un'azione pending a partire dalla `descrizione` che il
+    server allega (fonte unica per CLI e web, Tappa 7.2): il CLI non ricalcola
+    più la descrizione, la formatta soltanto. Fallback minimale se un vecchio
+    server non la mandasse."""
+    d = azione.get("descrizione")
+    if not d:
+        return f"azione di tipo '{azione.get('tipo', '?')}'"
+    righe = [f"{d.get('titolo', '')}".strip()]
+    for r in d.get("dettagli", []):
+        righe.append(f"  {r['etichetta']}: {r['valore']}")
+    if d.get("corpo"):
+        righe.append(f"\n{d['corpo']}")
+    return "\n".join(righe).strip()
 
 
 def _mostra_conferma(azione: dict) -> None:
-    print(f"\n[Conferma richiesta] {_descrivi_azione(azione)}\n")
+    print(f"\n[Conferma richiesta]\n{_descrivi_azione(azione)}\n")
 
 
 _RISPOSTE_AFFERMATIVE = {"y", "si", "sì", "confermo", "vai", "ok", "autorizzo"}
@@ -131,6 +112,8 @@ def _chiedi_conferma(client: httpx.Client, azione_id: str) -> None:
         print("Fatto.\n")
     elif stato == "rifiutata":
         print("Azione annullata.\n")
+    elif stato == "scaduta":
+        print("Azione scaduta (troppo tempo trascorso), richiedila di nuovo.\n")
     else:
         print(f"Stato azione: {stato}\n")
 

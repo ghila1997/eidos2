@@ -43,13 +43,25 @@
   </div>
 </section>
 
-<!-- APP: essere vivente + barra risposta + input testo (Tappa 7.1). -->
+<!-- APP: essere vivente + barra + log azioni + conferma + input (Tappa 7.1-7.2). -->
 <section id="app" hidden>
   <div id="essere-vivente-wrap">
     <iframe id="essere-vivente" title="Essere Vivente" src="/static/essere_vivente_component.html"></iframe>
   </div>
 
+  <!-- spia stato connessione (7.2): un prodotto non fallisce in silenzio. -->
+  <div id="conn-status" data-stato="online" title="Connessione">
+    <span class="dot"></span><span class="txt">Online</span>
+  </div>
+
   <div id="transcript-bar" class="idle" aria-live="polite"></div>
+
+  <!-- log azioni dal vivo (7.2): i tool in corso e completati. -->
+  <div id="actions-log" aria-live="polite"></div>
+
+  <!-- gate di conferma visivo (7.2): riempito dal JS con la descrizione del
+       server (formato "tipo mail"); scadenza gestita lato server (TTL 1h). -->
+  <div id="confirm-box" role="alertdialog" aria-labelledby="cf-title" hidden></div>
 
   <div id="controls">
     <form id="text-form">

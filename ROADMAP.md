@@ -238,13 +238,23 @@ resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
   test verdi incl. 9 nuovi sul ciclo di sessione web, refactor del translator senza regressioni
   vocali; prova manuale end-to-end del founder con login e streaming reali)
 
-**Tappa 7.2 — Trasparenza: log azioni + conferme + stato connessione**
+**Tappa 7.2 — Trasparenza: log azioni + conferme + stato connessione** — ✅ fatto (2026-07-29)
 - Log azioni dal vivo (dai tool in corso). **Gate di conferma** visivo per le azioni che scrivono
   fuori (scheda Sì/No con descrizione leggibile fornita dal server — fonte unica per CLI e web);
   409 azione pendente reso come scheda, non come errore. Indicatore stato WebSocket
   (online/riconnessione/offline — un prodotto non fallisce in silenzio).
+- Descrizione azione **spostata sul server** (`orchestratore/descrizioni_azioni.py`, struttura
+  generica `{icona, titolo, riepilogo, dettagli, corpo}`): il CLI la formatta, non la ricalcola.
+  `streaming.py` emette `tool_finito` (accoppiato per `id` a `tool_in_corso`) + etichette leggibili.
+  **TTL 1h pigra** sulle azioni pending (nessun job/migration): una scheda dimenticata scade e non
+  può partire ore dopo, e non blocca più la chat (decisione STOP 1 col founder).
 - **Finito quando**: un invio mail mostra la scheda di conferma nella UI; confermando parte davvero;
-  il log mostra i passi; disconnessione/riconnessione della rete gestita visibilmente.
+  il log mostra i passi; disconnessione/riconnessione della rete gestita visibilmente — ✅ 337 test
+  verdi + verifica end-to-end sul server reale (motore/Supabase/Gmail veri, login founder): turno
+  reale con log `tool_in_corso`/`tool_finito`, scheda formato mail con descrizione dal server,
+  409-come-scheda su WS, conferma rifiutata e scadenza (TTL) — nessuna mail inviata nel test.
+  Rifiniture visive rimandate a 7.6 (design v1 come stella polare). Dettaglio in
+  [docs/interfaccia_utente/README.md](docs/interfaccia_utente/README.md).
 
 **Tappa 7.3 — Barra ↔ cronologia unificata + persistenza**
 - La superficie conversazione: la barra di trascrizione in alto **si espande in cronologia**

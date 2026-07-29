@@ -5,6 +5,7 @@ direttamente dall'utente (mai dal modello), esegue l'azione reale.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from common.supabase_rest import client as _supabase_client
@@ -32,6 +33,30 @@ STATO_IN_ATTESA = "in_attesa"
 STATO_INVIATA = "confermata_inviata"
 STATO_RIFIUTATA = "rifiutata"
 STATO_ERRORE = "confermata_errore"
+STATO_SCADUTA = "scaduta"
+
+# Una scheda di conferma lasciata lì non deve poter partire ore dopo, quando il
+# contesto non c'è più (Tappa 7.2, decisione STOP 1). Scadenza *pigra*: nessun
+# job in background (quello è materia di Tappa 10/Attese) - si controlla al volo
+# quando si legge o si conferma un'azione, confrontando `created_at` con adesso.
+TTL_AZIONE = timedelta(hours=1)
+
+
+def _parse_ts(valore: str) -> datetime:
+    """created_at di Supabase (ISO8601, con 'Z' o offset) -> datetime aware."""
+    return datetime.fromisoformat(valore.replace("Z", "+00:00"))
+
+
+def azione_scaduta(azione: dict[str, Any], adesso: datetime | None = None) -> bool:
+    """True se l'azione è più vecchia di TTL_AZIONE. Senza `created_at`
+    (payload di test minimali) la si considera non scaduta: la scadenza è una
+    rete di sicurezza, non deve mai bloccare un'azione fresca per un timestamp
+    mancante."""
+    creata = azione.get("created_at")
+    if not creata:
+        return False
+    adesso = adesso or datetime.now(timezone.utc)
+    return adesso - _parse_ts(creata) > TTL_AZIONE
 
 
 class AzioneNonTrovata(Exception):
@@ -72,6 +97,20 @@ async def ottieni_azione_pendente_tenant(tenant_id: str) -> dict[str, Any] | Non
     return rows[0] if rows else None
 
 
+async def azione_bloccante(tenant_id: str) -> dict[str, Any] | None:
+    """L'azione pendente che deve bloccare una nuova richiesta - come
+    `ottieni_azione_pendente_tenant`, ma se l'unica pendente è **scaduta** la
+    marca `scaduta` e non blocca più (scadenza pigra, senza job): così una
+    scheda dimenticata non tiene la chat bloccata per sempre."""
+    azione = await ottieni_azione_pendente_tenant(tenant_id)
+    if azione is None:
+        return None
+    if azione_scaduta(azione):
+        await _aggiorna_stato(azione["id"], STATO_SCADUTA)
+        return None
+    return azione
+
+
 async def ottieni_azione(tenant_id: str, azione_id: str) -> dict[str, Any] | None:
     url, key = supabase_settings()
     resp = await _supabase_client().get(
@@ -110,6 +149,12 @@ async def conferma_azione(
     if not conferma:
         await _aggiorna_stato(azione_id, STATO_RIFIUTATA)
         return {"stato": STATO_RIFIUTATA}
+
+    # Rete di sicurezza: un "Sì" su una scheda troppo vecchia non spedisce nulla
+    # (il contesto potrebbe non valere più) - va richiesta di nuovo.
+    if azione_scaduta(azione):
+        await _aggiorna_stato(azione_id, STATO_SCADUTA)
+        return {"stato": STATO_SCADUTA}
 
     if azione["tipo"] not in _ESECUTORI:
         raise ValueError(f"tipo azione sconosciuto: {azione['tipo']}")

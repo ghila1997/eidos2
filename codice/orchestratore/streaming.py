@@ -16,11 +16,59 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from claude_agent_sdk.types import ResultMessage, StreamEvent
+from claude_agent_sdk.types import ResultMessage, StreamEvent, ToolResultBlock, UserMessage
 
 from . import azioni
+from .descrizioni_azioni import descrivi_azione
 
 MESSAGGIO_ERRORE = "Non sono riuscito a elaborare la richiesta, riprova."
+
+# Etichette leggibili per il log azioni della UI (Tappa 7.2): cosa sta facendo
+# l'assistente, non il nome tecnico del tool. Le scritture "fuori" sono al
+# gerundio "Preparo ..." perché a quel punto l'azione è solo *proposta*: parte
+# davvero solo dopo la conferma (vedi azioni.py). Un tool non in mappa (es. un
+# tool nativo dell'SDK) ricade sul nome pulito - meglio grezzo che sbagliato.
+_ETICHETTE_TOOL = {
+    "search_memoria": "Cerco nella memoria",
+    "remember_fact": "Salvo in memoria",
+    "list_impegni_aperti": "Controllo gli impegni aperti",
+    "propose_commitment": "Preparo un impegno",
+    "close_commitment": "Chiudo un impegno",
+    "draft_email": "Preparo una bozza",
+    "send_email": "Preparo l'invio della mail",
+    "reply_email": "Preparo la risposta",
+    "forward_email": "Preparo l'inoltro",
+    "send_draft": "Preparo l'invio della bozza",
+    "trash_email": "Cestino la mail",
+    "mark_email": "Segno la mail",
+    "organize_email": "Organizzo la mail",
+    "list_labels": "Guardo le etichette",
+    "list_attachments": "Guardo gli allegati",
+    "get_attachment": "Leggo un allegato",
+    "import_document": "Importo il documento",
+    "list_documents": "Elenco i documenti",
+    "get_document": "Recupero il documento",
+    "forget_document": "Preparo l'eliminazione del documento",
+    "search_events": "Cerco nel calendario",
+    "check_availability": "Controllo la disponibilità",
+    "respond_to_invite": "Rispondo all'invito",
+    "create_event": "Preparo l'evento",
+    "update_event": "Preparo la modifica dell'evento",
+    "delete_event": "Preparo la cancellazione dell'evento",
+    "search_files": "Cerco tra i file",
+    "read_file": "Leggo il file",
+    "list_folder": "Sfoglio la cartella",
+    "create_folder": "Creo la cartella",
+    "create_file": "Creo il file",
+    "update_file_content": "Aggiorno il file",
+    "move_file": "Sposto il file",
+    "copy_file": "Copio il file",
+    "rename_file": "Rinomino il file",
+    "revoke_permission": "Revoco un permesso",
+    "list_permissions": "Controllo i permessi",
+    "share_file": "Preparo la condivisione",
+    "trash_file": "Preparo il cestinamento del file",
+}
 
 
 def nome_tool_pulito(nome: str) -> str:
@@ -30,15 +78,26 @@ def nome_tool_pulito(nome: str) -> str:
     return nome
 
 
+def etichetta_tool(nome: str) -> str:
+    """Frase leggibile per il log; fallback sul nome pulito se sconosciuto."""
+    pulito = nome_tool_pulito(nome)
+    return _ETICHETTE_TOOL.get(pulito, pulito)
+
+
 async def traduci_turno(
     motore, testo: str, canale: str, tenant_id: str
 ) -> AsyncIterator[dict]:
     """Consuma `motore.turno(testo, canale)` e produce eventi UI man mano:
 
     - `{"evento": "delta", "testo": ...}` per ogni frammento di testo;
-    - `{"evento": "tool_in_corso", "tool": ...}` quando parte un tool;
+    - `{"evento": "tool_in_corso", "id": ..., "tool": ..., "etichetta": ...}`
+      quando parte un tool;
+    - `{"evento": "tool_finito", "id": ..., "esito": "ok"|"errore"}` quando il
+      tool ritorna (accoppiato per `id` al `tool_in_corso`, così il log della UI
+      chiude la riga invece di lasciarla "in corso" per sempre - Tappa 7.2);
     - un solo `{"evento": "fine", "risposta": ..., "azione_in_attesa": ...}`
-      alla fine, con l'eventuale azione pending appena creata da un tool.
+      alla fine, con l'eventuale azione pending appena creata da un tool
+      (arricchita di `descrizione` leggibile per la scheda di conferma).
 
     Un'eccezione del motore si propaga al chiamante (non tradotta qui)."""
     pezzi: list[str] = []
@@ -53,10 +112,30 @@ async def traduci_turno(
             elif tipo_evento == "content_block_start":
                 blocco = evento.get("content_block") or {}
                 if blocco.get("type") == "tool_use":
-                    yield {"evento": "tool_in_corso", "tool": nome_tool_pulito(blocco.get("name", ""))}
+                    nome = blocco.get("name", "")
+                    yield {
+                        "evento": "tool_in_corso",
+                        "id": blocco.get("id", ""),
+                        "tool": nome_tool_pulito(nome),
+                        "etichetta": etichetta_tool(nome),
+                    }
+        elif isinstance(messaggio, UserMessage):
+            # Il risultato di un tool torna come UserMessage con un
+            # ToolResultBlock: è il segnale che il tool ha *finito* (diverso da
+            # content_block_stop, che marca solo la fine della richiesta del
+            # modello, non l'esecuzione).
+            for blocco in messaggio.content or []:
+                if isinstance(blocco, ToolResultBlock):
+                    yield {
+                        "evento": "tool_finito",
+                        "id": blocco.tool_use_id,
+                        "esito": "errore" if blocco.is_error else "ok",
+                    }
         elif isinstance(messaggio, ResultMessage):
             if messaggio.subtype == "success" and messaggio.result:
                 pezzi.append(messaggio.result)
 
     azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
+    if azione_appena_creata is not None:
+        azione_appena_creata["descrizione"] = descrivi_azione(azione_appena_creata)
     yield {"evento": "fine", "risposta": "\n".join(pezzi), "azione_in_attesa": azione_appena_creata}
