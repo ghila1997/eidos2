@@ -17,6 +17,7 @@ import os  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 
 from fondamenta.auth import router as auth_router  # noqa: E402
+from interfaccia_utente import router as interfaccia_utente  # noqa: E402
 from orchestratore import agente, ponte  # noqa: E402
 from orchestratore.router import router as orchestratore_router  # noqa: E402
 
@@ -44,3 +45,8 @@ app.include_router(orchestratore_router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "message": "hello world"}
+
+
+# Interfaccia web per ultima: monta gli statici su /static e la pagina su /
+# (vedi interfaccia_utente/router.py, configura()).
+interfaccia_utente.configura(app)

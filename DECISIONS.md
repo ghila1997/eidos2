@@ -1400,3 +1400,54 @@ fetta (le altre restano nascoste finché non arriva la loro tappa, mai finte-mos
 inventati). Nessun codice scritto in questa sessione: design integrato nei documenti di governo;
 la costruzione parte da Tappa 7.1 con `saas-module-builder`. Il *feel* è stato bloccato con un
 mockup usa-e-getta preservato in `notes/mockup-tappa7/`.
+
+---
+
+## 2026-07-29 — Tappa 7.1: scheletro web end-to-end, `/ws/session` testo + translator condiviso
+
+**Contesto**: costruzione della prima fetta verticale della Tappa 7 (Interfaccia Utente), sul
+design già fissato in DECISIONS.md 2026-07-28. Obiettivo end-to-end: login → scrivi → risposta
+di testo in streaming con l'essere vivente che reagisce, senza terminale.
+
+**Decisioni prese:**
+
+1. **`/ws/session` è un canale nuovo, non un riuso del WS vocale `/chat/stream`.** Il turno di
+   testo è più semplice del vocale: un messaggio del client = un turno intero servito fino in
+   fondo, canale persistente per i turni successivi, **niente** ponte / speculativo / transcript
+   parziali (semantica vocale, che DECISIONS.md 2026-07-28 pt.3 dice esplicitamente di non
+   trascinare nel testo). Il ciclo di sessione vive in `codice/interfaccia_utente/sessione_web.py`
+   con `ricevi`/`invia` iniettabili (stesso pattern testabile del turno vocale, nessun vero
+   WebSocket nei test). Alternativa scartata: riusare `gestisci_sessione_vocale` — trascinerebbe
+   la macchina a stati speculativa (interrupt su ripensamento) inutile e fuori posto nel testo.
+
+2. **Estratto `orchestratore/streaming.py`: la traduzione turno SDK→eventi UI è condivisa.** La
+   mappa `StreamEvent`/`ResultMessage` → `delta`/`tool_in_corso`/`fine` viveva dentro
+   `turno_vocale._esegui_tentativo`; ora è una funzione pura riusata sia dalla voce (che ci monta
+   sopra ponte + speculativo) sia dalla sessione web (nuda). Motivazione: la forma degli eventi è
+   davvero condivisa tra i due canali (CLAUDE.md "ogni informazione vive in un punto solo"); il
+   testo dell'errore (`MESSAGGIO_ERRORE`) è single-sourced lì, il ciclo di vita/logging resta di
+   ciascun chiamante. Refactor senza cambio di comportamento: i 13 test vocali restano verdi.
+
+3. **Modulo `codice/interfaccia_utente/` con `configura(app)`.** Il modulo possiede la UI web:
+   `router.py` (rotta `/` che serve `static/index.html`, mount `/static`, WS `/ws/session`) e
+   `sessione_web.py`. Il canale importa il translator condiviso da `orchestratore` (confine di
+   dominio presentazione vs motore) — collocazione scelta esplicitamente con l'utente allo STOP 1.
+   Same-origin: il cookie di Fondamenta vale senza CORS. La pagina `/` non è protetta (si carica
+   sempre, poi il JS chiama `/me`); il WS autentica col cookie e chiude `4401` se non loggato.
+
+4. **UI potata alla sola fetta 7.1.** Static ripresi dall'export v1/mockup ma ridotti a
+   login + essere + barra risposta in streaming + input testo. Log azioni, scheda conferma, spia
+   connessione, cronologia, schede grafiche, voce/mic, PWA/markdown **non** sono nel codice: sono
+   le fette 7.2–7.6, rimandate apertamente (scope-guard: rimandare ≠ tagliare in silenzio). In
+   7.1 un'azione pendente creata da un turno compare come nota di testo nella barra, non come
+   scheda Sì/No (quella è 7.2), senza crash e senza confermare nulla di implicito (stesso gate
+   unico di CLAUDE.md).
+
+**Verifica**: 316 test automatici verdi (+9 `test_sessione_web.py`, i 13 vocali invariati dopo
+il refactor), lint pulito. Smoke test sul server reale: pagina e statici serviti, `/health` ok,
+`/me` senza cookie → 401, `/ws/session` senza auth → rifiutato. Prova manuale end-to-end (login
+reale + streaming + essere) allo STOP 2 del founder.
+
+**Esplicitamente fuori scope di questa fetta** (dichiarato, non tagliato): tutto ciò che è
+elencato come 7.2–7.6 in ROADMAP.md; login multi-provider e login-dev (presenti nel markup ma
+nascosti fino a Tappa 8).

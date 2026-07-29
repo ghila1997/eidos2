@@ -222,15 +222,21 @@ La composizione dell'**interfaccia finita** (tutti i pezzi, anche quelli che mat
 costruisce solo la fetta di Tappa 7, un incremento **verticale** alla volta (attraversa tutto e
 resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
 
-**Tappa 7.1 — Scheletro web end-to-end**
+**Tappa 7.1 — Scheletro web end-to-end** — ✅ fatto (2026-07-29)
 - Nuovo modulo `codice/interfaccia_utente/` con `static/` montato da FastAPI su `/` (cookie auth
   esistente, nessun CORS). Schermata di login ripresa da v1 (email/password sull'auth attuale;
   pulsanti Google/Microsoft nascosti fino a Tappa 8). Canale unico `/ws/session` (WebSocket) che
   esegue **un turno di testo in streaming** riusando il motore/streaming di Tappa 6; l'essere
   vivente reagisce agli stati (idle→thinking→speaking→idle), palette `nebulaCosmo`, zoom 0.85,
   sfondo con vignetta + griglia visibile.
+- `/ws/session` è un canale **nuovo**, non un riuso del WS vocale: il turno di testo è più
+  semplice (un messaggio = un turno intero, niente ponte/speculativo/parziali). La traduzione
+  turno→eventi è estratta in `orchestratore/streaming.py`, condivisa con la Voce (vedi DECISIONS.md
+  2026-07-29). Dettaglio modulo in [docs/interfaccia_utente/README.md](docs/interfaccia_utente/README.md).
 - **Finito quando**: il founder apre l'URL, fa login, scrive un messaggio e riceve la risposta in
-  streaming con l'essere vivente che reagisce — senza terminale.
+  streaming con l'essere vivente che reagisce — senza terminale — ✅ verificato 2026-07-29 (316
+  test verdi incl. 9 nuovi sul ciclo di sessione web, refactor del translator senza regressioni
+  vocali; prova manuale end-to-end del founder con login e streaming reali)
 
 **Tappa 7.2 — Trasparenza: log azioni + conferme + stato connessione**
 - Log azioni dal vivo (dai tool in corso). **Gate di conferma** visivo per le azioni che scrivono

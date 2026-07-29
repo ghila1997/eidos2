@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#04040c">
+<title>Eidos</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<canvas id="bg" aria-hidden="true"></canvas>
+<div class="void"></div>
+
+<div class="brand-lockup">
+  <div class="mark">eidos</div>
+  <div class="acr"><b>E</b>nhanced <b>I</b>ntelligent <b>D</b>igital <b>O</b>perating <b>S</b>ystem</div>
+</div>
+
+<!-- LOGIN (ripreso da v1). Provider Google/Microsoft e login-dev: Tappa 8. -->
+<section id="login" hidden>
+  <div id="login-box">
+    <div class="login-lead">
+      <span class="k">Dal pensiero alla forma</span>
+      <p class="h">Accedi<br><b>per iniziare.</b></p>
+    </div>
+    <div class="auth">
+      <form id="login-form">
+        <div class="field">
+          <input id="login-email" type="email" placeholder=" " autocomplete="email" required>
+          <label for="login-email">Email</label>
+          <span class="underline"></span>
+        </div>
+        <div class="field">
+          <input id="login-password" type="password" placeholder=" " autocomplete="current-password" required>
+          <label for="login-password">Password</label>
+          <span class="underline"></span>
+        </div>
+        <button type="submit" class="enter">Entra</button>
+      </form>
+      <p id="login-error" hidden></p>
+    </div>
+  </div>
+</section>
+
+<!-- APP: essere vivente + barra risposta + input testo (Tappa 7.1). -->
+<section id="app" hidden>
+  <div id="essere-vivente-wrap">
+    <iframe id="essere-vivente" title="Essere Vivente" src="/static/essere_vivente_component.html"></iframe>
+  </div>
+
+  <div id="transcript-bar" class="idle" aria-live="polite"></div>
+
+  <div id="controls">
+    <form id="text-form">
+      <input id="text-input" type="text" placeholder="Scrivi un messaggio…" autocomplete="off">
+      <button type="submit">Invia</button>
+    </form>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
