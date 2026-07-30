@@ -1579,3 +1579,67 @@ secondi, quanto arretra l'essere) restano ritoccabili in 7.6.
 live** (oggi solo `search_memoria`, semantica e solo sulle mail *importate*). È un buco del
 connettore Gmail rispetto allo standard "connettore completo" (CLAUDE.md), non della UI — annotato
 in ROADMAP.md come arretrato, da affrontare in una sessione Orchestratore dedicata.
+
+---
+
+## 2026-07-29 — Ricerca inbox Gmail live: `search_email`/`read_email`/`read_thread`
+
+**Contesto**: arretrato aperto lo stesso giorno provando 7.3. L'agente aveva `search_memoria`
+(semantica, solo sulle mail *importate* — sottoinsieme curato dal classificatore, Tappa 2) ma
+**nessun modo di cercare/leggere la casella Gmail reale**. Effetto: a "mostrami le ultime mail"
+rispondeva onestamente "ho solo la memoria", e `reply`/`forward`/`trash` erano irraggiungibili su
+mail non importate (vogliono un `message_id` che solo `search_memoria` dava).
+
+**Decisioni**:
+1. **Tre tool read-only**: `search_email(query, max_results)` (casella live via `messages.list?q=`,
+   sintassi di ricerca Gmail; metadati recuperati con un `get` per messaggio in parallelo),
+   `read_email(message_id)` (messaggio intero, espone `ottieni_messaggio`), `read_thread(thread_id)`
+   (conversazione intera via `threads.get` — Gmail è thread-centrico, leggere un singolo messaggio
+   di uno scambio lungo è monco). Nessun gate (categoria immediata, come `search_events`).
+2. **Query in sintassi Gmail grezza** (un campo `query`), non parametri strutturati: copre "tutto
+   quello che un umano cerca nella posta" (criterio completezza connettori), il modello la conosce,
+   coerente con `search_events`/`search_files`. Deciso con l'utente.
+3. **Disambiguazione nelle `description` dei tool, non nel system prompt** (playbook
+   system-prompt-agenti.md §2): `search_email` = casella live, `search_memoria` = storico curato
+   ("non è la casella live, per le mail usa search_email"). Il modello sceglie leggendo i contratti;
+   una description che nomina l'alternativa è più robusta di una riga di prompt lontana.
+4. **Cap risultati a 50**: non ingolfare il contesto del modello. Per un lavoro di pulizia in massa
+   nemmeno 50 basta → **paginazione/bulk** rimandata (arretrato, ROADMAP.md); per elenchi grandi
+   conviene una query mirata.
+
+**Trappola reale (STOP 2)**: i tre tool erano definiti con `@tool` e in `ALLOWED_TOOLS` ma **non
+passati alla lista `tools=[...]` di `create_sdk_mcp_server`** → registrati "permessi" ma invisibili
+al modello (che quindi diceva ancora "ho solo la memoria"). I test unitari chiamavano gli helper
+diretti, non lo vedevano. Fix + **test-guardia** che asserisce `{tool registrati} == {tool in
+ALLOWED_TOOLS}` — cattura ogni futuro "definito ma non registrato" (e viceversa).
+
+**Perché non un tool unico mail+memoria**: semantiche diverse (live vs semantico-storico), costo e
+freschezza diversi — due tool con description chiare, non uno che nasconde la scelta.
+
+---
+
+## 2026-07-29 — Le azioni eseguite NON si tengono in cronologia (rivede la scelta di 7.3)
+
+**Contesto**: la Tappa 7.3 aveva deciso di scrivere l'esito di ogni azione ("Mail inviata a X") come
+messaggio nel record della conversazione (vedi voce "Tappa 7.3" sopra). Provandolo (STOP 2, dopo aver
+inviato più mail di test) il founder ha giudicato che **una lista persistente di "Mail inviata" è
+rumore, non informazione**, e non ha senso reale.
+
+**Decisione (supera il punto 2 della voce Tappa 7.3 su questo aspetto)**: le azioni eseguite **non si
+persistono in cronologia**.
+- `conferma_azione` ritorna ancora la frase di esito nel payload per la **conferma dal vivo** nella
+  UI, ma non chiama più `salva_esito` (rimossa da `conversazione.py`).
+- `conversazione.get_messaggi` filtra `ruolo in (utente, assistente)`: la cronologia torna a essere
+  **solo la conversazione** (testo + passi del turno), e le righe `esito` vecchie in tabella spariscono
+  dalla vista senza migration.
+- Nella UI l'esito vive nel **flusso dal vivo** come gli altri log (passi/testo): resta finché c'è la
+  conversazione a schermo, poi scorre via — non si accumula.
+
+**Perché**: la verità di "cosa ho fatto" **è già in Gmail/Calendar** (posta Inviata, eventi). Tenerne
+una copia nella chat è un doppione che invecchia; meglio chiederla alla fonte vera — ora possibile con
+`search_email`. Un eventuale "diario unificato di tutto ciò che l'assistente ha fatto" (mail+calendario+
+file) è un pezzo dedicato, non la chat — materia Procedure/Esecuzioni (Tappa 10). La colonna `esito`
+resta nello schema (inutilizzata, nessuna migration di rimozione ora).
+
+**Verifica**: 362 test verdi; `conferma_azione` non tocca più `conversazione`; front-end provato dal
+founder (esito lampeggia dal vivo e non compare in cronologia).

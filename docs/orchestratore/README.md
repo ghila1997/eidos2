@@ -56,7 +56,10 @@ scansionate (rifiutato esplicitamente, troppo costoso per questo caso d'uso).
   (`query()` con `resume` per riprendere la sessione tra richieste HTTP; fallback a sessione nuova
   se quella salvata non esiste più nel container — vedi DECISIONS.md)
 - `codice/orchestratore/tools.py` — tool custom:
-  - Mail: `search_memoria` (lettura unificata, vedi sotto), `draft_email`, `send_email`,
+  - Mail: `search_email` (cerca nella casella Gmail **live**, sintassi di ricerca Gmail — distinto da
+    `search_memoria` che è semantico sullo storico importato; disambiguazione nelle description, vedi
+    DECISIONS.md 2026-07-29), `read_email` (messaggio intero), `read_thread` (conversazione intera),
+    `search_memoria` (lettura unificata, vedi sotto), `draft_email`, `send_email`,
     `reply_email`, `forward_email`, `send_draft`, `trash_email` (questi ultimi cinque creano
     un'azione pending), `mark_email`, `organize_email`, `list_labels`, `list_attachments`
     (elenca allegati con `attachment_id` — necessario prima di `get_attachment`/
@@ -226,6 +229,19 @@ impegni) — vedi [docs/eval.md](../eval.md).
 
 ## Trappole note / attenzioni
 
+- **Un tool `@tool` va anche PASSATO a `create_sdk_mcp_server(tools=[...])`, non basta definirlo e
+  metterlo in `ALLOWED_TOOLS`.** Trovato a STOP 2 (2026-07-29): `search_email`/`read_email`/
+  `read_thread` erano definiti e "permessi" ma non nella lista del server → invisibili al modello
+  (che diceva ancora "ho solo la memoria"). I test unitari chiamano gli helper diretti, non lo
+  vedono: c'è un **test-guardia** (`test_tools.py::test_tool_registrati_e_allowed_coincidono`) che
+  asserisce `{tool registrati nel server} == {tool in ALLOWED_TOOLS}`.
+- **`search_email` (casella live) vs `search_memoria` (storico curato importato)**: la scelta di
+  quale usare vive nelle *description* dei due tool, contrapposte, non nel system prompt (playbook
+  system-prompt-agenti.md §2). `search_email` cappa a 50 risultati; il bulk/paginazione è rimandato
+  (ROADMAP.md).
+- **Le azioni eseguite NON si tengono in cronologia** (DECISIONS.md 2026-07-29): `conferma_azione`
+  ritorna l'esito per la conferma dal vivo ma non lo persiste; "cosa ho fatto" si chiede a Gmail
+  (`search_email`)/Calendar, la fonte vera.
 - `send_email`/`reply_email`/`forward_email`/`send_draft`/`trash_email` e
   `create_event`/`update_event`/`delete_event` **con partecipanti** non eseguono mai subito:
   creano un'azione in `azioni_pending`, solo `/azioni/{id}/conferma` (chiamata dall'utente, mai

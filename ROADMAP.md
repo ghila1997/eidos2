@@ -427,13 +427,11 @@ più "dimenticate silenziosamente"
 
 ## Esplicitamente rimandato
 
-- **Ricerca/sfoglio della inbox Gmail live** (arretrato Connettori, scoperto 2026-07-29 provando 7.3):
-  oggi l'agente ha `search_memoria` (semantica, **solo sulle mail importate** — sottoinsieme filtrato,
-  Tappa 2) ma **nessun tool per cercare/elencare la casella Gmail reale** (per query/mittente/periodo).
-  Effetto collaterale: `reply`/`forward`/`trash` vogliono un `message_id` che oggi arriva solo dalle
-  mail importate — una mail non importata non è raggiungibile. È un buco rispetto allo standard
-  "connettore completo" (CLAUDE.md), materia Orchestratore/Connettori, non UI — da fare in sessione
-  dedicata con i suoi STOP, non dentro un altro ciclo.
+- **Ricerca/sfoglio della inbox Gmail live** — ✅ fatto (2026-07-29): `search_email`/`read_email`/
+  `read_thread` (vedi DECISIONS.md). Resta aperto il caso **bulk/pulizia di massa**: `search_email`
+  cappa a 50 risultati per non ingolfare il contesto; un lavoro reale su centinaia di mail (pulizia,
+  archiviazione di massa) vuole **paginazione** e probabilmente un'esecuzione deterministica a step —
+  materia Procedure/Automazioni L3 (Tappa 10), non un tool read-only. Da valutare lì.
 - **Latenza al primo token LLM** (Tappa 6, Voce): 2,4-4,8s su turni semplici, oltre 10s con una
   tool call reale — variabilità non eliminata da incr.3 (8-12s→2,5-6s). È latenza Orchestratore,
   non di Voce; il `ponte` la maschera ma non la risolve. Da riprendere in una sessione dedicata

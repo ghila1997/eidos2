@@ -27,9 +27,11 @@ e cronologia sono **una sola superficie "ambient"** in basso, larga quanto l'inp
 - **Lettura (espansa, col chevron)**: cronologia a contrasto pieno, azioni **inline** (niente
   "espandi"), l'essere **arretra dolce** (non sparisce). Aprendo a metà esecuzione il turno in corso
   si vede dal vivo in coda. Scrivere non richiude la cronologia.
-- **Persistenza per-messaggio** per tenant (utente/assistente/esito, coi passi del turno): sopravvive
-  a refresh **e** a riavvio del server. L'**esito** di un'azione ("Mail inviata a …") entra nella
-  cronologia da qualunque canale, scritto nel punto unico di conferma.
+- **Persistenza della conversazione** per tenant (messaggi utente/assistente, coi passi del turno):
+  sopravvive a refresh **e** a riavvio del server. Le **azioni eseguite NON si tengono in cronologia**
+  (rivisto 2026-07-29, vedi DECISIONS.md): l'esito ("Mail inviata a …") è solo una conferma **dal vivo**
+  nel flusso (come gli altri log, poi scorre via), non un messaggio salvato — "cosa ho fatto" si chiede
+  a Gmail/Calendar (`search_email`), la fonte vera.
 
 **Cosa NON fa ancora** (fette successive, rimandate apertamente): schede grafiche flottanti
 `data_presented` (7.4 — diventeranno messaggi con `tipo`+`payload` nello stesso log, riapribili come
@@ -45,7 +47,8 @@ traslucenza/tempi/arretramento essere (7.6). Login Google/Microsoft e login-dev 
   via `interfaccia_utente.router.configura(app)` da `codice/app.py`). Protocollo `/ws/session`:
   - client→server: `{"tipo": "messaggio", "testo": "..."}`
   - server→client, primo evento all'apertura: `{"evento": "storico", "messaggi": [{"ruolo":
-    "utente"|"assistente"|"esito", "contenuto": ..., "passi": [{"etichetta","esito"}]|null}, ...]}`
+    "utente"|"assistente", "contenuto": ..., "passi": [{"etichetta","esito"}]|null}, ...]}`
+    (solo la conversazione; le azioni eseguite non entrano — vedi sotto)
   - poi, per ogni turno: `{"evento": "delta", "testo": ...}` ·
     `{"evento": "tool_in_corso", "id", "tool", "etichetta"}` ·
     `{"evento": "tool_finito", "id", "esito": "ok"|"errore"}` ·
@@ -58,21 +61,20 @@ traslucenza/tempi/arretramento essere (7.6). Login Google/Microsoft e login-dev 
 - **Consuma**: `fondamenta.auth.get_sessione_corrente` (stesso cookie di sessione, nessun CORS),
   `fondamenta` `/login` e `/me`, `orchestratore.agente.motore_per` + `orchestratore.streaming`
   (traduzione turno→eventi, condivisa con la Voce), `orchestratore.azioni` (gate + TTL),
-  `orchestratore.descrizioni_azioni` (descrizione scheda), `orchestratore.conversazione` (record
-  della conversazione: `salva_turno`/`get_messaggi`; `salva_esito` lo chiama `azioni.conferma_azione`).
+  `orchestratore.descrizioni_azioni` (descrizione scheda + `esito_azione` per la conferma dal vivo),
+  `orchestratore.conversazione` (record della conversazione: `salva_turno`/`get_messaggi`).
   L'essere vivente è il componente autonomo di `export-essere-vivente/`, copiato in `static/`.
 
 ## Come funziona
 
 - `codice/orchestratore/conversazione.py` — **record della conversazione per-messaggio** (vive
-  nell'Orchestratore, non nell'interfaccia: lo scrive anche il flusso di conferma). `salva_turno`
-  scrive utente+assistente in una POST (coi `passi` sull'assistente, `created_at` a 1ms di distanza
-  per l'ordine), `salva_esito` aggiunge un messaggio `esito`, `get_messaggi` legge gli ultimi N in
-  ordine crescente (sempre scoping per tenant). REST server-side con service role key, RLS senza
+  nell'Orchestratore, non nell'interfaccia). `salva_turno` scrive utente+assistente in una POST (coi
+  `passi` sull'assistente, `created_at` a 1ms di distanza per l'ordine), `get_messaggi` legge gli ultimi
+  N in ordine crescente filtrando `ruolo in (utente,assistente)` — **solo la conversazione, non le azioni
+  eseguite** (rivisto 2026-07-29, vedi DECISIONS.md). REST server-side con service role key, RLS senza
   policy (tabella `conversazione_messaggi`, migration `20260729120000`).
-- `codice/orchestratore/azioni.py` — `conferma_azione` è il **punto unico** da cui passa ogni
-  conferma (web/CLI/voce): a esecuzione riuscita scrive l'esito in cronologia
-  (`conversazione.salva_esito`, resiliente) e lo ritorna nel payload. Il testo è
+- `codice/orchestratore/azioni.py` — `conferma_azione`: a esecuzione riuscita ritorna la frase di
+  esito nel payload per la **conferma dal vivo** nella UI (non la persiste). Il testo è
   `descrizioni_azioni.esito_azione` (frase al passato; import locale per evitare il ciclo con `azioni`).
 - `codice/interfaccia_utente/sessione_web.py` — `gestisci_sessione`: all'apertura manda `storico`
   (resiliente: se il DB è giù, cronologia vuota, la chat non muore); per ogni messaggio esegue un
@@ -89,7 +91,7 @@ traslucenza/tempi/arretramento essere (7.6). Login Google/Microsoft e login-dev 
     (`passiInlineHTML`), l'essere arretra (`body.convo-open`); il turno in corso si mostra dal vivo
     in coda (`aggiornaLiveHistory`, `.live-tail`) quando è aperta;
   - resto invariato: login, WS con auto-riconnessione + spia, scheda di conferma (che appende l'esito
-    al flusso e alla cronologia), pilotaggio essere via `postMessage`.
+    solo al flusso **dal vivo**, non alla cronologia), pilotaggio essere via `postMessage`.
 
 ## Come si prova
 
@@ -108,9 +110,9 @@ chiude. **Refresh** → la cronologia c'è ancora (è su Supabase: sopravvive an
 La migration `20260729120000_conversazione_messaggi.sql` va applicata al progetto Supabase
 (`supabase db push`, oppure SQL Editor) prima della prova.
 
-Test automatici: `test_conversazione.py` (anti-leak, ordine, bound, passi sul messaggio giusto),
-`test_sessione_web.py` (evento `storico`/`messaggi`, salvataggio solo su turno riuscito, passi
-raccolti, degrado resiliente), `test_azioni.py` (esito scritto alla conferma, ritornato nel payload),
+Test automatici: `test_conversazione.py` (anti-leak, ordine, bound, solo conversazione — filtro
+`ruolo`), `test_sessione_web.py` (evento `storico`/`messaggi`, salvataggio solo su turno riuscito,
+passi raccolti, degrado resiliente), `test_azioni.py` (esito ritornato dal vivo ma **non** persistito),
 `test_descrizioni_azioni.py` (`esito_azione`), `test_streaming.py`/`test_router_chat.py`/`test_cli.py`
 (invariati). Il front-end statico è verificato a mano dal founder sul server reale allo STOP 2.
 
@@ -130,14 +132,14 @@ raccolti, degrado resiliente), `test_azioni.py` (esito scritto alla conferma, ri
   (il motore è cache-ato per tenant, stesso processo); un **riavvio server** azzera il contesto
   dell'agente (decisione Orchestratore: niente resume di sessioni vecchie) ma la cronologia resta.
   Non è un bug: la cronologia è un record, non la memoria conversazionale del modello.
-- **`conversazione.salva_esito` sta in `conferma_azione`, non nella UI**: è il punto unico per ogni
-  canale. `descrizioni_azioni` importa `azioni` → in `conferma_azione` l'import di
-  `conversazione`/`descrizioni_azioni` è **locale** per non creare un ciclo.
+- **Le azioni eseguite non si tengono in cronologia** (rivisto 2026-07-29, DECISIONS.md): l'esito è
+  solo una conferma dal vivo; "cosa ho fatto" si chiede a Gmail/Calendar (`search_email`). `get_messaggi`
+  filtra `ruolo in (utente,assistente)`, così anche eventuali righe `esito` vecchie spariscono.
 - **Ordine dei due messaggi di un turno**: `created_at` esplicito a 1ms di distanza (utente prima),
   perché il default `now()` di un insert batch li lascerebbe pari e l'ordine sarebbe indefinito.
 - **Persistenza e lettura resilienti**: se il DB è giù o la tabella non è migrata, `get_messaggi`
-  degrada a cronologia vuota e `salva_turno`/`salva_esito` loggano e proseguono — la chat non muore
-  per un problema di cronologia (secondaria rispetto al dialogo).
+  degrada a cronologia vuota e `salva_turno` logga e prosegue — la chat non muore per un problema di
+  cronologia (secondaria rispetto al dialogo).
 - **La superficie ambient è aggiornata anche quando la cronologia è aperta** (è solo `display:none`):
   così collassando a metà turno il flusso è già lì. Il turno in corso appare in cronologia via
   `aggiornaLiveHistory` (una `.live-tail` che `renderStorico` sostituisce a turno chiuso).
