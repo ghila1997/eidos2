@@ -256,9 +256,16 @@ async function risolviConferma(conferma) {
       body: JSON.stringify({ conferma }),
     });
     if (!r.ok) {
-      // 404 (già risolta/altra sessione) o 409: la scheda non è più valida.
       chiudiConferma();
-      ambientErrore('Questa conferma non è più valida.');
+      if (r.status === 404 || r.status === 409) {
+        // scheda davvero non più valida (già risolta/scaduta/altra sessione)
+        ambientErrore('Questa conferma non è più valida.');
+      } else {
+        // l'azione era valida ma l'esecuzione è fallita: mostra il vero motivo
+        let msg = 'Non sono riuscito a completare l’azione. Riprova.';
+        try { const b = await r.json(); if (b && b.detail) msg = b.detail; } catch { /* corpo non JSON */ }
+        ambientErrore(msg);
+      }
       return;
     }
     const risposta = await r.json();

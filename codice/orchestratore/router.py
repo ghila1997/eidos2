@@ -10,6 +10,8 @@ WebSocket persistente (vedi turno_vocale.py).
 """
 from __future__ import annotations
 
+import logging
+
 from claude_agent_sdk import ResultMessage
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
@@ -19,6 +21,8 @@ from fondamenta.auth import get_sessione_corrente
 
 from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, turno_vocale, voce_token
 from .descrizioni_azioni import descrivi_azione
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -136,6 +140,16 @@ async def conferma(azione_id: str, body: ConfermaRequest, request: Request):
         raise HTTPException(status_code=404, detail="azione non trovata")
     except azioni.AzioneGiaRisolta as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        # L'azione era valida ma l'esecuzione è fallita (es. token OAuth rifiutato,
+        # rete). conferma_azione l'ha già segnata in errore. Non un 500 grezzo:
+        # un messaggio onesto, distinto dalla scheda "non più valida" (404/409).
+        logger.exception("errore eseguendo l'azione confermata %s", azione_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Non sono riuscito a completare l'azione. Riprova; se persiste "
+            "potrebbe servire riconnettere l'account collegato.",
+        )
 
 
 @router.get("/oauth/google/authorize")

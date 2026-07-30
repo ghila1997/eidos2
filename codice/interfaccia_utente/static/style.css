@@ -135,10 +135,15 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
    (l'essere resta il baricentro - si dialoga, non si legge). Espansa (lettura):
    cronologia a contrasto pieno, con le azioni mostrate INLINE come processo
    (stile Claude Code), non dietro un espandi. */
+/* dock in basso: conversazione + scheda conferma + input impilati (la scheda
+   spinge su la conversazione invece di coprirla). Cresce verso l'alto. */
+#dock {
+  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+  width: min(92vw, 560px); z-index: 5;
+  display: flex; flex-direction: column; align-items: stretch; gap: 12px;
+}
 #convo {
-  position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%);
-  width: min(92vw, 560px); z-index: 4;
-  display: flex; flex-direction: column; align-items: stretch;
+  display: flex; flex-direction: column; align-items: stretch; min-height: 0;
 }
 #convo-toggle {
   align-self: center; margin-bottom: 6px; width: 30px; height: 20px; padding: 0;
@@ -243,9 +248,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 body.convo-open #essere-vivente-wrap { filter: blur(5px); opacity: 0.4; transition: filter 0.5s, opacity 0.5s; }
 
 #controls {
-  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
-  width: min(92vw, 560px);
-  display: flex; align-items: center; gap: 10px; z-index: 5;
+  display: flex; align-items: center; gap: 10px;
   background: var(--panel); border: 1px solid var(--panel-border); border-radius: 20px;
   padding: 10px 16px; backdrop-filter: blur(10px);
 }
@@ -280,14 +283,12 @@ body.convo-open #essere-vivente-wrap { filter: blur(5px); opacity: 0.4; transiti
 
 /* ---------- gate di conferma: scheda "formato mail" (7.2) ---------- */
 #confirm-box {
-  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
-  width: min(94vw, 480px); z-index: 7;
   background: var(--glass); border: 1px solid var(--panel-border); border-radius: 16px;
   padding: 16px 18px; display: flex; flex-direction: column; gap: 13px;
   backdrop-filter: blur(14px); box-shadow: 0 24px 70px -24px rgba(0, 0, 0, 0.85);
   animation: cardin 0.3s both;
 }
-@keyframes cardin { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes cardin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .cf-head { display: flex; align-items: baseline; gap: 9px; }
 .cf-icon { font-size: 15px; }
 .cf-title { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
