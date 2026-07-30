@@ -99,6 +99,11 @@ function ambientStepInizio(id, etichetta) {
   const row = document.createElement('div');
   row.className = 'amb-step run';   // "in corso": il pallino pulsa (processo vivo)
   row.dataset.toolId = id || ('t' + Date.now());
+  // Le righe "Preparo ..." sono azioni soltanto PROPOSTE: restano in sospeso
+  // finché non passano dal gate. Marcandole si possono sostituire con l'esito
+  // vero quando la conferma arriva, invece di lasciare trenta "Preparo il
+  // cestinamento" col ✓ che sembrano trenta cose già fatte.
+  if ((etichetta || '').startsWith('Preparo')) row.dataset.preparata = '1';
   row.innerHTML = `<span class="tick">●</span>${escapeHTML(etichetta || 'Lavoro…')}`;
   stepsEl.appendChild(row);
 }
@@ -120,15 +125,29 @@ function assicuraSay() {
 }
 function ambientSay(testo) { assicuraSay(); sayEl.className = 'amb-say'; sayEl.textContent = testo; }
 function ambientErrore(msg) { assicuraSay(); sayEl.className = 'amb-say err'; sayEl.textContent = msg; }
-function ambientEsito(testo) {
-  // L'esito di un'azione vive SOLO nel flusso dal vivo, come gli altri log
-  // (passi/testo): resta finché c'è la conversazione a schermo, poi scorre su
-  // e sparisce. NON si salva in cronologia (niente lista di azioni fatte: la
-  // verità di "cosa ho fatto" è in Gmail/Calendar). Vedi DECISIONS 2026-07-29.
+function ambientEsito(testo, classe = 'done') {
+  // Una riga di log come le altre, in coda ai passi del turno che l'ha
+  // preparata: sotto "Preparo l'invio della mail" compare "✓ Mail inviata a X".
+  // Non è un'altra categoria di evento - è la stessa cosa dei passi, solo
+  // avvenuta dopo la conferma; prima lampeggiava a parte e spariva in 2s,
+  // lasciando il log fermo su "Preparo" senza dire mai se fosse partita.
+  // In cronologia continua a non andare (DECISIONS 2026-07-29: la verità di
+  // "cosa ho fatto" sta in Gmail/Calendar).
+  if (!stepsEl) ambientNuovoTurno('');
+  // La superficie a quel punto è quasi sempre già a riposo (.settled, opacità
+  // 0.5): il turno è finito da un pezzo, la conferma arriva quando l'utente
+  // clicca. Senza risvegliarla la riga dell'esito finiva mezza trasparente in
+  // fondo a un flusso spento - c'era, ma non si vedeva. Ed è l'unica riga che
+  // dice cos'è successo davvero.
+  convo.classList.remove('settled');
+  // Le righe delle azioni proposte sono superate: al loro posto UNA riga che
+  // dice cosa è successo davvero. Trenta "Preparo il cestinamento" col ✓
+  // raccontavano una cosa non ancora avvenuta e non venivano mai chiuse.
+  stepsEl.querySelectorAll('[data-preparata]').forEach((r) => r.remove());
   const row = document.createElement('div');
-  row.className = 'amb-esito';
-  row.innerHTML = `<span class="k">✓</span>${escapeHTML(testo)}`;
-  ambient.appendChild(row);
+  row.className = `amb-step ${classe}`;
+  row.innerHTML = `<span class="tick">${classe === 'errore' ? '✗' : '✓'}</span>${escapeHTML(testo)}`;
+  stepsEl.appendChild(row);
   ambientTrim();
 }
 
@@ -202,8 +221,15 @@ convoToggle.addEventListener('click', () => setConvoOpen(!convo.classList.contai
 // cliccare il testo ambient apre la cronologia (leggi tutto)
 ambient.addEventListener('click', () => { if (!convo.classList.contains('open')) setConvoOpen(true); });
 
-/* ---- gate di conferma: scheda "formato mail" (sempre nitida) ---- */
+/* ---- gate di conferma: scheda "formato mail" (sempre nitida) ----
+   Una scheda sola anche quando il turno prepara N azioni (es. 21 mail nel
+   cestino): la decisione umana è una, chiederla 21 volte non è più sicuro,
+   è solo più faticoso — e prima portava l'utente a vederne una e perdere di
+   vista le altre 20. Le voci si possono escludere una per una prima di
+   confermare: `escluse` tiene gli id tolti, e partono comunque tutti al
+   server (a `false`), così un'esclusione resta una decisione registrata. */
 let azioneCorrente = null;
+let escluse = new Set();
 
 function oraLeggibile(iso) {
   if (!iso) return '';
@@ -212,10 +238,63 @@ function oraLeggibile(iso) {
   return d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
+function vociAttive() {
+  const voci = (azioneCorrente?.descrizione?.voci) || [];
+  return voci.filter((v) => !escluse.has(v.id));
+}
+
+function renderVoci() {
+  const voci = (azioneCorrente?.descrizione?.voci) || [];
+  return voci
+    .map((v) => {
+      const fuori = escluse.has(v.id);
+      return (
+        `<li class="cf-voce${fuori ? ' fuori' : ''}" data-id="${escapeHTML(v.id)}">` +
+          `<span class="cf-voce-testo">${escapeHTML(v.riepilogo || '')}</span>` +
+          `<button type="button" class="cf-voce-x" data-id="${escapeHTML(v.id)}" ` +
+            `title="${fuori ? 'Rimetti nella lista' : 'Togli dalla lista'}" ` +
+            `aria-label="${fuori ? 'Rimetti' : 'Togli'} ${escapeHTML(v.riepilogo || '')}">` +
+            `${fuori ? '↺' : '×'}</button>` +
+        `</li>`
+      );
+    })
+    .join('');
+}
+
+function aggiornaContoConferma() {
+  const attive = vociAttive().length;
+  const yes = $('cf-yes');
+  const lista = $('cf-lista');
+  if (lista) lista.innerHTML = renderVoci();
+  if (yes) {
+    yes.textContent = attive > 1 ? `Sì, procedi (${attive})` : 'Sì, procedi';
+    // niente da eseguire = niente da confermare: resta solo "Annulla"
+    yes.disabled = attive === 0;
+  }
+  const rimaste = $('cf-rimaste');
+  if (rimaste) {
+    const fuori = escluse.size;
+    rimaste.textContent = fuori ? `${fuori} ${fuori > 1 ? 'escluse' : 'esclusa'}` : '';
+  }
+  agganciaX();
+}
+
+function agganciaX() {
+  confirmBox.querySelectorAll('.cf-voce-x').forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.id;
+      if (escluse.has(id)) escluse.delete(id); else escluse.add(id);
+      aggiornaContoConferma();
+    };
+  });
+}
+
 function mostraConferma(azione) {
   azioneCorrente = azione;
+  escluse = new Set();
   const d = azione.descrizione || { titolo: 'Conferma richiesta', dettagli: [], corpo: null };
-  const ora = oraLeggibile(azione.created_at);
+  const prima = (azione.azioni || [])[0] || {};
+  const ora = oraLeggibile(prima.created_at);
   const righe = (d.dettagli || [])
     .map((r) => `<span class="k">${escapeHTML(r.etichetta)}</span><span class="v">${escapeHTML(r.valore)}</span>`)
     .join('');
@@ -225,16 +304,19 @@ function mostraConferma(azione) {
       `<span class="cf-title" id="cf-title">${escapeHTML(d.titolo || 'Conferma richiesta')}</span>` +
       (ora ? `<span class="cf-time">preparata · ${ora}</span>` : '') +
     `</div>` +
+    (d.multipla ? `<ul class="cf-lista" id="cf-lista">${renderVoci()}</ul>` : '') +
     (righe ? `<div class="cf-details">${righe}</div>` : '') +
     (d.corpo ? `<div class="cf-body">${escapeHTML(d.corpo)}</div>` : '') +
     `<div class="confirm-actions">` +
       `<span class="cf-ask">Vuoi procedere?</span>` +
+      `<span class="cf-rimaste" id="cf-rimaste"></span>` +
       `<button type="button" class="secondary" id="cf-no">Annulla</button>` +
       `<button type="button" class="enter" id="cf-yes">Sì, procedi</button>` +
     `</div>`;
   confirmBox.hidden = false;
   $('cf-yes').addEventListener('click', () => risolviConferma(true));
   $('cf-no').addEventListener('click', () => risolviConferma(false));
+  if (d.multipla) aggiornaContoConferma();
   $('cf-yes').focus();
   abilitaInput(false); // finché c'è una scheda aperta l'input resta bloccato
 }
@@ -243,46 +325,57 @@ function chiudiConferma() {
   confirmBox.hidden = true;
   confirmBox.innerHTML = '';
   azioneCorrente = null;
+  escluse = new Set();
   abilitaInput(true);
 }
 
 async function risolviConferma(conferma) {
   if (!azioneCorrente) return;
-  const id = azioneCorrente.id;
-  $('cf-yes').disabled = true; $('cf-no').disabled = true;
+  // Tutte le voci partono, anche quelle escluse: a `false`. Un'esclusione è
+  // una decisione ("questa no"), non un'omissione — e lascia il gruppo pulito
+  // invece di lasciare pendenti invisibili che riemergono al turno dopo.
+  const decisioni = {};
+  for (const a of (azioneCorrente.azioni || [])) {
+    decisioni[a.id] = conferma && !escluse.has(a.id);
+  }
+  if (!Object.keys(decisioni).length) { chiudiConferma(); return; }
+  const quante = Object.values(decisioni).filter(Boolean).length;
+  const yes = $('cf-yes');
+  yes.disabled = true; $('cf-no').disabled = true;
+  // Un gruppo grande richiede qualche secondo: senza dirlo la scheda sembra
+  // piantata (STOP 2, 2026-07-30 - "sta lì fermo tantissimo come bloccato").
+  // Non c'è un avanzamento reale dal server, quindi si dice cosa sta facendo
+  // senza inventare un "12 su 30" che non abbiamo.
+  if (conferma) {
+    yes.classList.add('in-corso');
+    yes.textContent = quante > 1 ? `Eseguo ${quante} azioni…` : 'Eseguo…';
+  }
   try {
-    const r = await fetch(`/azioni/${encodeURIComponent(id)}/conferma`, {
+    const r = await fetch('/azioni/conferma-gruppo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conferma }),
+      body: JSON.stringify({ decisioni }),
     });
     if (!r.ok) {
       chiudiConferma();
-      if (r.status === 404 || r.status === 409) {
-        // scheda davvero non più valida (già risolta/scaduta/altra sessione)
-        ambientErrore('Questa conferma non è più valida.');
-      } else {
-        // l'azione era valida ma l'esecuzione è fallita: mostra il vero motivo
-        let msg = 'Non sono riuscito a completare l’azione. Riprova.';
-        try { const b = await r.json(); if (b && b.detail) msg = b.detail; } catch { /* corpo non JSON */ }
-        ambientErrore(msg);
-      }
+      let msg = 'Non sono riuscito a completare l’azione. Riprova.';
+      try { const b = await r.json(); if (b && b.detail) msg = b.detail; } catch { /* corpo non JSON */ }
+      ambientErrore(msg);
       return;
     }
     const risposta = await r.json();
     chiudiConferma();
-    if (risposta.stato === 'confermata_inviata') {
-      // solo conferma dal vivo nel flusso, niente salvataggio in cronologia
-      ambientEsito(risposta.esito || 'Fatto');
-      programmaSpegnimento(2000);
-    } else if (risposta.stato === 'rifiutata') {
-      ambientSay('Annullato.');
+    if (!conferma) {
+      // anche l'annullamento chiude le righe "Preparo ...": restare aperte
+      // suggerirebbe che qualcosa sia ancora in corso.
+      ambientEsito(`Annullato (${quante || Object.keys(decisioni).length} azioni)`, 'errore');
       programmaSpegnimento(1600);
-    } else if (risposta.stato === 'scaduta') {
-      ambientErrore('La conferma è scaduta. Richiedila di nuovo.');
-    } else {
-      ambientSay(`Stato: ${risposta.stato}`);
+      return;
     }
+    // esito unico del gruppo: "20 mail spostate nel cestino, 1 esclusa".
+    // Solo conferma dal vivo nel flusso, niente salvataggio in cronologia.
+    ambientEsito(risposta.esito || 'Fatto');
+    programmaSpegnimento();  // stessa attesa di un turno normale, non una corsia a parte
   } catch {
     // rete assente al momento della conferma: si riprova (scheda resta).
     $('cf-yes').disabled = false; $('cf-no').disabled = false;

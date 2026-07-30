@@ -83,17 +83,17 @@ def _monta_ponte(monkeypatch, ritorno=None):
     monkeypatch.setattr(ponte, "genera_ponte", fake)
 
 
-def _monta_azioni(monkeypatch, azione_ritorno=None):
+def _monta_azioni(monkeypatch, azioni_ritorno=()):
     async def fake(tenant_id):
-        return azione_ritorno
+        return list(azioni_ritorno)
 
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", fake)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", fake)
 
 
 @pytest.mark.asyncio
 async def test_esegui_tentativo_mette_delta_e_fine_in_coda(monkeypatch):
     _monta_ponte(monkeypatch, ritorno=None)  # astensione, niente ponte
-    _monta_azioni(monkeypatch, azione_ritorno=None)
+    _monta_azioni(monkeypatch)
     motore = FakeMotore([_delta("Ciao"), _result("Ciao")])
     coda = asyncio.Queue()
     await _esegui_tentativo(motore, "ciao", tentativo_id=1, coda=coda, tenant_id="t1")
@@ -107,7 +107,7 @@ async def test_esegui_tentativo_mette_delta_e_fine_in_coda(monkeypatch):
 @pytest.mark.asyncio
 async def test_esegui_tentativo_include_ponte_se_generato(monkeypatch):
     _monta_ponte(monkeypatch, ritorno="Vediamo subito...")
-    _monta_azioni(monkeypatch, azione_ritorno=None)
+    _monta_azioni(monkeypatch)
     motore = FakeMotore([_result("ok")])
     coda = asyncio.Queue()
     await _esegui_tentativo(motore, "che impegni ho domani", tentativo_id=1, coda=coda, tenant_id="t1")
@@ -118,7 +118,7 @@ async def test_esegui_tentativo_include_ponte_se_generato(monkeypatch):
 @pytest.mark.asyncio
 async def test_esegui_tentativo_traduce_tool_in_corso_senza_prefisso_mcp(monkeypatch):
     _monta_ponte(monkeypatch, ritorno=None)
-    _monta_azioni(monkeypatch, azione_ritorno=None)
+    _monta_azioni(monkeypatch)
     motore = FakeMotore([_tool_start("mcp__eidos__search_events"), _result("ok")])
     coda = asyncio.Queue()
     await _esegui_tentativo(motore, "impegni?", tentativo_id=1, coda=coda, tenant_id="t1")
@@ -130,7 +130,7 @@ async def test_esegui_tentativo_traduce_tool_in_corso_senza_prefisso_mcp(monkeyp
 @pytest.mark.asyncio
 async def test_esegui_tentativo_errore_pulito_mai_traceback(monkeypatch):
     _monta_ponte(monkeypatch, ritorno=None)
-    _monta_azioni(monkeypatch, azione_ritorno=None)
+    _monta_azioni(monkeypatch)
 
     class MotoreRotto:
         async def turno(self, messaggio, canale):
@@ -205,7 +205,7 @@ class RegistroInviati:
 @pytest.fixture(autouse=True)
 def _fake_motore_per(monkeypatch):
     """Sostituisce agente.motore_per con un FakeMotore scriptabile per
-    tenant, e azioni.ottieni_azione_pendente_tenant con 'mai pendente' di
+    tenant, e azioni.ottieni_azioni_pendenti_tenant con 'mai pendente' di
     default (i test che vogliono il gate lo sovrascrivono)."""
     motori = {}
 
@@ -216,7 +216,7 @@ def _fake_motore_per(monkeypatch):
         return None
 
     monkeypatch.setattr(agente, "motore_per", fake_motore_per)
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", nessuna_azione_pendente)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", nessuna_azione_pendente)
     return motori
 
 
@@ -321,9 +321,9 @@ async def test_finale_che_combacia_non_riavvia(monkeypatch, _fake_motore_per):
 
 async def test_azione_pendente_blocca_avvio_tentativo(monkeypatch, _fake_motore_per):
     async def azione_pendente(tenant_id):
-        return {"id": "az-1", "tipo": "send_email", "payload": {}}
+        return [{"id": "az-1", "tipo": "send_email", "payload": {}}]
 
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", azione_pendente)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", azione_pendente)
     motore = FakeMotore([_result("mai chiamato")])
     _fake_motore_per["t1"] = motore
 
@@ -385,12 +385,12 @@ async def test_azione_pendente_blocca_riavvio_dopo_interrupt(monkeypatch, _fake_
         nonlocal chiamate_gate
         chiamate_gate += 1
         if chiamate_gate == 1:
-            return None
-        risultato = {"id": "az-1", "tipo": "send_email", "payload": {}}
+            return []
+        risultato = [{"id": "az-1", "tipo": "send_email", "payload": {}}]
         gate_valutato_su_riavvio.set()
         return risultato
 
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", azione_pendente_solo_su_riavvio)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", azione_pendente_solo_su_riavvio)
 
     # chiudi_alla_fine=False: dopo il secondo parziale il ricevitore resta
     # sospeso invece di sollevare ConnessioneChiusa - isoliamo l'effetto del

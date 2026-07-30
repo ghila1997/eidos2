@@ -5,6 +5,8 @@ direttamente dall'utente (mai dal modello), esegue l'azione reale.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,6 +16,8 @@ from memoria import db as memoria_db
 from memoria import gestione_documenti
 from memoria.entity_resolution import slug_entity
 from . import calendar_client, drive_client, gmail_client
+
+logger = logging.getLogger(__name__)
 
 TIPO_SEND_EMAIL = "send_email"
 TIPO_REPLY_EMAIL = "reply_email"
@@ -40,6 +44,11 @@ STATO_SCADUTA = "scaduta"
 # job in background (quello è materia di Tappa 10/Attese) - si controlla al volo
 # quando si legge o si conferma un'azione, confrontando `created_at` con adesso.
 TTL_AZIONE = timedelta(hours=1)
+
+# Quante azioni di un gruppo si eseguono insieme (vedi `conferma_gruppo`).
+# 5: abbastanza da non far sembrare bloccata una scheda da 30 azioni, poco
+# abbastanza da non arrivare a Gmail come una raffica.
+_PARALLELE_PER_GRUPPO = 5
 
 
 def _parse_ts(valore: str) -> datetime:
@@ -78,37 +87,45 @@ async def crea_azione_pending(tenant_id: str, tipo: str, payload: dict[str, Any]
     return resp.json()[0]["id"]
 
 
-async def ottieni_azione_pendente_tenant(tenant_id: str) -> dict[str, Any] | None:
-    """Usata dal router /chat: se c'è già un'azione in_attesa per il tenant,
-    la chat si blocca finché non viene risolta (conferma o rifiuto) - vedi
-    design Tappa 2, "regola pratica" sulla conferma pendente."""
+async def ottieni_azioni_pendenti_tenant(tenant_id: str) -> list[dict[str, Any]]:
+    """**Tutte** le azioni in attesa del tenant, dalla più vecchia alla più
+    recente. Sono sempre un gruppo omogeneo di un solo turno: una nuova
+    richiesta è bloccata finché ce n'è anche una sola pendente (vedi
+    `azioni_bloccanti` e i suoi chiamanti), quindi non possono mescolarsi
+    azioni di turni diversi. Per questo il "gruppo" non ha bisogno di una
+    colonna sua: è l'insieme delle `in_attesa` di quel tenant.
+
+    Leggeva `limit=1` (e senza `order`): con 21 `trash_email` in un turno
+    l'utente ne vedeva una sola, presa a caso, e le altre 20 riemergevano una
+    per messaggio. Vedi ROADMAP.md, fix conferme multiple."""
     url, key = supabase_settings()
     resp = await _supabase_client().get(
         f"{url}/rest/v1/azioni_pending",
         params={
             "tenant_id": f"eq.{tenant_id}",
             "stato": f"eq.{STATO_IN_ATTESA}",
-            "limit": "1",
+            "order": "created_at.asc",
         },
         headers=rest_headers(key),
     )
     resp.raise_for_status()
-    rows = resp.json()
-    return rows[0] if rows else None
+    return resp.json()
 
 
-async def azione_bloccante(tenant_id: str) -> dict[str, Any] | None:
-    """L'azione pendente che deve bloccare una nuova richiesta - come
-    `ottieni_azione_pendente_tenant`, ma se l'unica pendente è **scaduta** la
-    marca `scaduta` e non blocca più (scadenza pigra, senza job): così una
-    scheda dimenticata non tiene la chat bloccata per sempre."""
-    azione = await ottieni_azione_pendente_tenant(tenant_id)
-    if azione is None:
-        return None
-    if azione_scaduta(azione):
-        await _aggiorna_stato(azione["id"], STATO_SCADUTA)
-        return None
-    return azione
+async def azioni_bloccanti(tenant_id: str) -> list[dict[str, Any]]:
+    """Le azioni pendenti che devono bloccare una nuova richiesta - come
+    `ottieni_azioni_pendenti_tenant`, ma le **scadute le marca tutte insieme**
+    e non le restituisce (scadenza pigra, senza job): così un gruppo
+    dimenticato non tiene la chat bloccata per sempre.
+
+    Tutte insieme e non una per volta: le azioni di un gruppo nascono nello
+    stesso secondo e quindi scadono insieme; marcarne una per richiesta
+    obbligherebbe a mandare 21 messaggi per sbloccare 21 schede."""
+    pendenti = await ottieni_azioni_pendenti_tenant(tenant_id)
+    scadute = {a["id"] for a in pendenti if azione_scaduta(a)}
+    if scadute:
+        await _aggiorna_stato_molte(sorted(scadute), STATO_SCADUTA)
+    return [a for a in pendenti if a["id"] not in scadute]
 
 
 async def ottieni_azione(tenant_id: str, azione_id: str) -> dict[str, Any] | None:
@@ -134,6 +151,21 @@ async def _aggiorna_stato(azione_id: str, stato: str) -> None:
     resp.raise_for_status()
 
 
+async def _aggiorna_stato_molte(azione_ids: list[str], stato: str) -> None:
+    """Stesso stato su più azioni in una sola PATCH (`id=in.(...)`): scadere un
+    gruppo di 21 non deve costare 21 round-trip a Supabase."""
+    if not azione_ids:
+        return
+    url, key = supabase_settings()
+    resp = await _supabase_client().patch(
+        f"{url}/rest/v1/azioni_pending",
+        params={"id": f"in.({','.join(azione_ids)})"},
+        headers=rest_headers(key),
+        json={"stato": stato},
+    )
+    resp.raise_for_status()
+
+
 async def conferma_azione(
     tenant_id: str, azione_id: str, conferma: bool
 ) -> dict[str, Any]:
@@ -146,15 +178,17 @@ async def conferma_azione(
     if azione["stato"] != STATO_IN_ATTESA:
         raise AzioneGiaRisolta(f"stato attuale: {azione['stato']}")
 
+    # `tipo` in uscita serve a chi risolve un gruppo intero (`conferma_gruppo`)
+    # per contare per tipo senza rileggere le azioni da Supabase.
     if not conferma:
         await _aggiorna_stato(azione_id, STATO_RIFIUTATA)
-        return {"stato": STATO_RIFIUTATA}
+        return {"stato": STATO_RIFIUTATA, "tipo": azione["tipo"]}
 
     # Rete di sicurezza: un "Sì" su una scheda troppo vecchia non spedisce nulla
     # (il contesto potrebbe non valere più) - va richiesta di nuovo.
     if azione_scaduta(azione):
         await _aggiorna_stato(azione_id, STATO_SCADUTA)
-        return {"stato": STATO_SCADUTA}
+        return {"stato": STATO_SCADUTA, "tipo": azione["tipo"]}
 
     if azione["tipo"] not in _ESECUTORI:
         raise ValueError(f"tipo azione sconosciuto: {azione['tipo']}")
@@ -173,7 +207,63 @@ async def conferma_azione(
     # 2026-07-29). `descrizioni_azioni` importa `azioni` -> import locale.
     from . import descrizioni_azioni
 
-    return {"stato": STATO_INVIATA, "esito": descrizioni_azioni.esito_azione(azione)}
+    return {
+        "stato": STATO_INVIATA,
+        "tipo": azione["tipo"],
+        "esito": descrizioni_azioni.esito_azione(azione),
+    }
+
+
+async def conferma_gruppo(
+    tenant_id: str, decisioni: dict[str, bool]
+) -> dict[str, Any]:
+    """Risolve in un colpo solo le azioni di un gruppo (`{azione_id: sì/no}`).
+
+    Non è una scorciatoia intorno al gate: passa comunque da `conferma_azione`
+    per ogni azione, che resta il punto unico in cui una distruttiva diventa
+    reale (CLAUDE.md). Quello che cambia è solo *quante volte si chiede*: la
+    decisione umana su "cestina queste 21" è una, non ventuno.
+
+    Le azioni **non citate** in `decisioni` non vengono toccate: la UI manda
+    sempre tutto il gruppo, ma un client parziale non deve poter far sparire
+    in silenzio una conferma che l'utente non ha mai visto.
+
+    Un fallimento non ferma il resto (una mail su 21 che non parte per un 500
+    di Gmail non deve annullare le altre 20 già decise): si prosegue e si
+    riporta onestamente quante sono andate e quante no.
+
+    Poche alla volta in parallelo (`_PARALLELE_PER_GRUPPO`) e non tutte in
+    fila: 30 azioni in sequenza sono ~12s con la scheda ferma e l'utente
+    convinto che si sia bloccata (STOP 2, 2026-07-30). Il parallelismo non
+    tocca il gate - ogni azione passa comunque da `conferma_azione`, che la
+    rivalida e la esegue per conto suo; cambia solo quante aspettano il
+    proprio turno di rete. Limitato e non illimitato per non scaricare 30
+    richieste insieme su Gmail.
+    """
+    semaforo = asyncio.Semaphore(_PARALLELE_PER_GRUPPO)
+
+    async def _risolvi(azione_id: str, conferma: bool) -> dict[str, Any]:
+        async with semaforo:
+            try:
+                risultato = await conferma_azione(tenant_id, azione_id, conferma)
+                return {"id": azione_id, **risultato}
+            except AzioneNonTrovata:
+                return {"id": azione_id, "stato": "non_trovata"}
+            except AzioneGiaRisolta:
+                return {"id": azione_id, "stato": "gia_risolta"}
+            except Exception as exc:
+                # `conferma_azione` l'ha già marcata in errore: qui si annota e
+                # si continua col resto del gruppo.
+                logger.exception("azione %s del gruppo fallita", azione_id)
+                return {"id": azione_id, "stato": STATO_ERRORE, "errore": str(exc)}
+
+    # gather tiene l'ordine delle decisioni: l'esito resta leggibile nell'ordine
+    # in cui l'utente ha visto le voci nella scheda.
+    esiti = list(await asyncio.gather(*(_risolvi(i, c) for i, c in decisioni.items())))
+
+    from . import descrizioni_azioni
+
+    return {"esiti": esiti, "esito": descrizioni_azioni.esito_gruppo(esiti)}
 
 
 async def _esegui_send_email(tenant_id: str, payload: dict[str, Any]) -> None:

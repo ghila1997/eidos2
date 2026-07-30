@@ -58,7 +58,7 @@ def test_ws_scambio_completo_con_sessione_valida(monkeypatch):
 
     monkeypatch.setattr("orchestratore.router.get_sessione_corrente", fake_sessione)
     monkeypatch.setattr(agente, "motore_per", fake_motore_per)
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", nessuna_azione)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", nessuna_azione)
     monkeypatch.setattr(ponte, "genera_ponte", niente_ponte)
 
     client = _client()

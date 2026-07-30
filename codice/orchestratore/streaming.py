@@ -19,7 +19,7 @@ from typing import AsyncIterator
 from claude_agent_sdk.types import ResultMessage, StreamEvent, ToolResultBlock, UserMessage
 
 from . import azioni
-from .descrizioni_azioni import descrivi_azione
+from .descrizioni_azioni import descrivi_gruppo
 
 MESSAGGIO_ERRORE = "Non sono riuscito a elaborare la richiesta, riprova."
 
@@ -42,7 +42,10 @@ _ETICHETTE_TOOL = {
     "reply_email": "Preparo la risposta",
     "forward_email": "Preparo l'inoltro",
     "send_draft": "Preparo l'invio della bozza",
-    "trash_email": "Cestino la mail",
+    # "Cestino la mail" col ✓ leggeva come "fatto", ma a quel punto l'azione è
+    # solo *proposta*: parte davvero solo alla conferma. Era l'unica scrittura
+    # gated rimasta al presente mentre le altre erano già al gerundio.
+    "trash_email": "Preparo il cestinamento",
     "mark_email": "Segno la mail",
     "organize_email": "Organizzo la mail",
     "list_labels": "Guardo le etichette",
@@ -74,6 +77,17 @@ _ETICHETTE_TOOL = {
 }
 
 
+async def gruppo_in_attesa(tenant_id: str) -> dict | None:
+    """Le azioni pendenti del turno appena finito, come **una sola** scheda da
+    confermare (`{"azioni": [...], "descrizione": {...}}`), o None se non ce
+    ne sono. Punto unico per web, CLI e voce: un turno che ne crea 21 deve
+    chiedere una volta sola, non ventuno (vedi `azioni.conferma_gruppo`)."""
+    pendenti = await azioni.ottieni_azioni_pendenti_tenant(tenant_id)
+    if not pendenti:
+        return None
+    return {"azioni": pendenti, "descrizione": descrivi_gruppo(pendenti)}
+
+
 def nome_tool_pulito(nome: str) -> str:
     """`mcp__<server>__<tool>` -> `<tool>`; i tool nativi restano invariati."""
     if nome.startswith("mcp__"):
@@ -99,8 +113,9 @@ async def traduci_turno(
       tool ritorna (accoppiato per `id` al `tool_in_corso`, così il log della UI
       chiude la riga invece di lasciarla "in corso" per sempre - Tappa 7.2);
     - un solo `{"evento": "fine", "risposta": ..., "azione_in_attesa": ...}`
-      alla fine, con l'eventuale azione pending appena creata da un tool
-      (arricchita di `descrizione` leggibile per la scheda di conferma).
+      alla fine, con le eventuali azioni pending create dai tool in questo
+      turno, raggruppate in **una sola** scheda di conferma (vedi
+      `gruppo_in_attesa`).
 
     Un'eccezione del motore si propaga al chiamante (non tradotta qui)."""
     pezzi: list[str] = []
@@ -138,7 +153,8 @@ async def traduci_turno(
             if messaggio.subtype == "success" and messaggio.result:
                 pezzi.append(messaggio.result)
 
-    azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
-    if azione_appena_creata is not None:
-        azione_appena_creata["descrizione"] = descrivi_azione(azione_appena_creata)
-    yield {"evento": "fine", "risposta": "\n".join(pezzi), "azione_in_attesa": azione_appena_creata}
+    yield {
+        "evento": "fine",
+        "risposta": "\n".join(pezzi),
+        "azione_in_attesa": await gruppo_in_attesa(tenant_id),
+    }

@@ -1643,3 +1643,78 @@ resta nello schema (inutilizzata, nessuna migration di rimozione ora).
 
 **Verifica**: 362 test verdi; `conferma_azione` non tocca più `conversazione`; front-end provato dal
 founder (esito lampeggia dal vivo e non compare in cronologia).
+
+---
+
+## 2026-07-30 — Conferma di gruppo: un turno, una scheda, una decisione
+
+**Contesto**: provando "metti nel cestino queste 21 mail" (STOP 2) il founder ha visto **una sola**
+richiesta di conferma, e le altre 20 riemergere una per messaggio scritto. Causa: le pendenti si
+leggevano con `limit=1` e senza `order` — di 21 ne tornava una, a caso; per di più la scadenza pigra
+ne marcava una per richiesta, quindi 19 orfane richiedevano 19 messaggi solo per sbloccare la chat.
+La scheda mostrava inoltre il `message_id` grezzo: inconfermabile da un umano.
+
+**Decisione**: le azioni pendenti di un tenant si trattano come **un gruppo**, con una scheda sola.
+- **Nessuna colonna nuova, nessuna migration**: un nuovo turno è già bloccato finché esiste una
+  pendente (`azioni_bloccanti`), quindi tutte le `in_attesa` di un tenant vengono per forza dallo
+  stesso turno. Il gruppo esisteva già, il codice non lo guardava.
+- `conferma_gruppo(tenant_id, {azione_id: sì/no})` risolve tutto insieme, ma **passa comunque da
+  `conferma_azione` per ogni azione**: il punto unico in cui una distruttiva diventa reale non si
+  tocca (CLAUDE.md). Cambia solo *quante volte si chiede*.
+- Ogni voce è **escludibile singolarmente** dalla scheda web; le escluse partono a `false`, così
+  un'esclusione è una decisione registrata e non un silenzio. A voce e da CLI si conferma il gruppo
+  intero: scegliere 3 voci su 21 parlando è il modo di fraintendersi su un'azione distruttiva.
+- Un fallimento **non ferma il resto** (una mail su 21 che non parte non annulla le altre 20 già
+  decise): si prosegue e l'esito dice quante sono andate e quante no.
+- Il payload porta ora l'**etichetta leggibile** (mittente/oggetto, nome file, titolo evento), letta
+  dal client API e **mai dal modello**, che la ricorderebbe sbagliata.
+
+**Perché non un tool plurale (`trash_email(message_ids: [...])`)**: andrebbe rifatto tool per tool e
+il bug tornerebbe identico appena il modello chiama N volte singolarmente. Raggruppare nel gate copre
+ogni tipo di azione e regge comunque. Resta possibile aggiungerlo dopo come ottimizzazione.
+
+**Verifica**: 380 test verdi; provato dal founder su 11 e 30 mail reali (verificato su Gmail, non sul
+DB: tutte con etichetta TRASH).
+
+---
+
+## 2026-07-30 — Il modello deve sapere cosa è stato confermato
+
+**Contesto**: sempre a STOP 2, dopo aver confermato 11 cestinamenti (avvenuti davvero), alla domanda
+"l'hai fatto?" Eidos ha risposto **"no, non ancora"**; al "fallo nuovamente" ha ricreato le stesse 11
+azioni. Su Gmail è stato innocuo (ricestinare non fa nulla) ma **su `send_email` sarebbero partite due
+mail vere allo stesso destinatario**.
+
+**Causa**: il gate sta fuori dal turno dell'agente — è il suo scopo — e non gli risponde. L'ultima cosa
+che il modello sa è "azione in attesa di conferma": rispondeva in buona fede su un contesto fermo alla
+propria proposta.
+
+**Decisione**: l'esito di una conferma rientra nel contesto al turno successivo come prefisso
+`[eseguito dopo la tua conferma: ...]` (`agente.annota_esito` / `_prefisso_turno`), accanto a
+`[adesso: ...]` che già c'era. In memoria e non su Supabase: è un promemoria per il prossimo turno, non
+un fatto da conservare — la verità di "cosa ho fatto" resta in Gmail/Calendar (vedi 2026-07-29).
+Perderlo a un riavvio significa un turno senza la nota, non un dato perso.
+
+Il system prompt aggiunge tre regole: dopo aver chiamato il tool **non sai** se l'azione è avvenuta;
+davanti a "l'hai fatto?" non rispondere né sì né no dal tuo contesto (controlla con un tool di
+lettura); **non riproporre mai** un'azione perché ti sembra non eseguita — rifarla la raddoppia.
+
+**Perché non un tool che il modello chiama per controllare**: dovrebbe ricordarsi di chiamarlo, e
+proprio nel caso in cui sbaglia (crede di sapere già) non lo farebbe. Il prefisso arriva comunque.
+
+---
+
+## 2026-07-30 — Client HTTP condiviso per le API Google
+
+**Contesto**: la conferma di 21 cestinamenti impiegava ~23 s, con la scheda ferma. Misurato
+(`users.getProfile`, 8 chiamate): **1,10 s a chiamata** con un `httpx.AsyncClient` nuovo ogni volta,
+**0,18 s** con un client condiviso — è l'handshake TLS, ripagato a ogni richiesta.
+
+**Decisione**: `common/http_condiviso.py`, usato da `gmail_client`, `drive_client` e `oauth_core` (35
+punti). `sessione()` sostituisce `async with httpx.AsyncClient()` riga per riga senza reindentare i
+chiamanti e **senza chiudere** il client condiviso all'uscita del blocco. Timeout invariato: qui si
+cambia quante connessioni si aprono, non quanto si aspetta una risposta.
+
+**Perché non era già così**: `common/supabase_rest.py` documentava già il problema (e citava "~0,7 s
+misurati su Google Calendar") ma l'aveva risolto solo per Supabase; i client Google erano rimasti
+indietro. Effetto collaterale: la suite di test è passata da ~110 s a ~43 s.

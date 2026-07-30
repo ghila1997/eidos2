@@ -121,3 +121,49 @@ async def test_opzioni_motore_niente_resume_di_sessioni_vecchie():
     assert opzioni.resume is None
     opzioni_con_resume = await motore._opzioni(resume="sess-viva")
     assert opzioni_con_resume.resume == "sess-viva"
+
+
+# --- il modello deve sapere cosa è stato confermato (STOP 2, 2026-07-30) ----
+# Il gate sta fuori dal turno, quindi nulla tornava al modello: alla domanda
+# "l'hai fatto?" rispondeva "non ancora" su azioni già eseguite, e a "fallo di
+# nuovo" le ricreava. Su 11 cestinamenti reali sono diventate 22 azioni.
+
+def test_prefisso_turno_senza_esiti_resta_come_prima():
+    prefisso = agente._prefisso_turno("testo")
+    assert "[canale: testo]" in prefisso
+    assert "eseguito dopo la tua conferma" not in prefisso
+
+
+def test_prefisso_turno_riporta_gli_esiti_confermati():
+    prefisso = agente._prefisso_turno("testo", ["11 mail spostate nel cestino"])
+    assert "[eseguito dopo la tua conferma: 11 mail spostate nel cestino]" in prefisso
+
+
+def test_annota_esito_viene_consumato_una_volta_sola():
+    """Una nota si dà una volta: al turno dopo vive già nel contesto della
+    sessione, ripeterla farebbe credere al modello che sia successo di nuovo."""
+    tenant = "tenant-test-esiti"
+    agente.annota_esito(tenant, "Mail inviata a x@y.it")
+    agente.annota_esito(tenant, "Evento creato: Riunione")
+
+    assert agente._consuma_esiti(tenant) == ["Mail inviata a x@y.it", "Evento creato: Riunione"]
+    assert agente._consuma_esiti(tenant) == []
+
+
+def test_annota_esito_e_per_tenant():
+    agente.annota_esito("tenant-a", "Mail inviata")
+    assert agente._consuma_esiti("tenant-b") == []
+    assert agente._consuma_esiti("tenant-a") == ["Mail inviata"]
+
+
+def test_annota_esito_ignora_stringa_vuota():
+    """Un rifiuto non produce esito: non deve lasciare una nota vuota che il
+    modello leggerebbe come 'è stato eseguito qualcosa'."""
+    agente.annota_esito("tenant-vuoto", "")
+    assert agente._consuma_esiti("tenant-vuoto") == []
+
+
+def test_system_prompt_vieta_di_dire_che_non_e_stato_fatto():
+    prompt = agente._costruisci_system_prompt({})
+    assert "eseguito dopo la tua conferma" in prompt
+    assert "Non riproporre MAI la stessa azione" in prompt

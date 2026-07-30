@@ -111,11 +111,11 @@ def _fake_motore_per(monkeypatch):
         return motori[tenant_id]
 
     async def nessuna_azione_pendente(tenant_id):
-        return None
+        return []
 
     monkeypatch.setattr(agente, "motore_per", fake_motore_per)
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", nessuna_azione_pendente)
-    monkeypatch.setattr(azioni, "azione_bloccante", nessuna_azione_pendente)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", nessuna_azione_pendente)
+    monkeypatch.setattr(azioni, "azioni_bloccanti", nessuna_azione_pendente)
     return motori
 
 
@@ -221,10 +221,10 @@ async def test_azione_pendente_diventa_scheda_non_errore(monkeypatch, _fake_moto
     client riceve la **scheda** di conferma (evento azione_in_attesa con
     descrizione leggibile), non un errore rosso."""
     async def azione_pendente(tenant_id):
-        return {"id": "az-1", "tipo": "send_email",
-                "payload": {"destinatario": "x@y.it", "oggetto": "Ciao", "corpo": "Testo"}}
+        return [{"id": "az-1", "tipo": "send_email",
+                 "payload": {"destinatario": "x@y.it", "oggetto": "Ciao", "corpo": "Testo"}}]
 
-    monkeypatch.setattr(azioni, "azione_bloccante", azione_pendente)
+    monkeypatch.setattr(azioni, "azioni_bloccanti", azione_pendente)
     motore = FakeMotore([[_result("mai chiamato")]])
     _fake_motore_per["t1"] = motore
     ricevi = RicevitoreScriptato([{"tipo": "messaggio", "testo": "manda la mail"}])
@@ -233,7 +233,7 @@ async def test_azione_pendente_diventa_scheda_non_errore(monkeypatch, _fake_moto
     await gestisci_sessione("t1", ricevi, invia)
 
     scheda = next(e for e in invia.eventi if e["evento"] == "azione_in_attesa")
-    assert scheda["azione"]["id"] == "az-1"
+    assert [a["id"] for a in scheda["azione"]["azioni"]] == ["az-1"]
     assert scheda["azione"]["descrizione"]["titolo"] == "Invio email"
     assert motore.testi_ricevuti == []  # nessun turno avviato
 
@@ -358,10 +358,10 @@ async def test_azione_gia_in_attesa_non_salva_nessun_turno(
     """Con un'azione gia' pendente non parte un turno (si manda la scheda):
     non c'e' niente da mettere in cronologia."""
     async def azione_pendente(tenant_id):
-        return {"id": "az-1", "tipo": "send_email",
-                "payload": {"destinatario": "x@y.it", "oggetto": "O", "corpo": "C"}}
+        return [{"id": "az-1", "tipo": "send_email",
+                 "payload": {"destinatario": "x@y.it", "oggetto": "O", "corpo": "C"}}]
 
-    monkeypatch.setattr(azioni, "azione_bloccante", azione_pendente)
+    monkeypatch.setattr(azioni, "azioni_bloccanti", azione_pendente)
     _fake_motore_per["t1"] = FakeMotore([[_result("mai")]])
     ricevi = RicevitoreScriptato([{"tipo": "messaggio", "testo": "manda"}])
 

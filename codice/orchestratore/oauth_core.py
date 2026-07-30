@@ -18,7 +18,7 @@ import os
 import time
 from urllib.parse import urlencode
 
-import httpx
+from common import http_condiviso
 from cryptography.fernet import Fernet
 
 from common.supabase_rest import rest_headers, supabase_settings
@@ -82,7 +82,7 @@ def costruisci_url_autorizzazione(tenant_id: str, scope: str, redirect_path: str
 
 async def scambia_codice(code: str, redirect_path: str) -> dict:
     redirect_base = os.environ["EIDOS_OAUTH_REDIRECT_BASE_URL"].rstrip("/")
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             _TOKEN_URL,
             data={
@@ -98,7 +98,7 @@ async def scambia_codice(code: str, redirect_path: str) -> dict:
 
 
 async def rinnova_access_token(refresh_token: str) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             _TOKEN_URL,
             data={
@@ -124,7 +124,7 @@ def decifra_refresh_token(token_cifrato: str) -> str:
 
 async def salva_credenziale(tenant_id: str, provider: str, scope: str, refresh_token: str) -> None:
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{url}/rest/v1/oauth_credenziali",
             params={"on_conflict": "tenant_id,provider"},
@@ -141,7 +141,7 @@ async def salva_credenziale(tenant_id: str, provider: str, scope: str, refresh_t
 
 async def get_credenziale(tenant_id: str, provider: str) -> dict | None:
     url, key = supabase_settings()
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{url}/rest/v1/oauth_credenziali",
             params={"tenant_id": f"eq.{tenant_id}", "provider": f"eq.{provider}"},

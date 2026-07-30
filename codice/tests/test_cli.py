@@ -8,14 +8,13 @@ import httpx
 
 import cli
 from cli import _descrivi_azione, _interpreta_risposta
-from orchestratore.descrizioni_azioni import descrivi_azione
+from orchestratore.descrizioni_azioni import descrivi_azione, descrivi_gruppo
 
 
 def _azione(tipo: str, payload: dict) -> dict:
     """Un'azione come la manda il server: tipo/payload + descrizione allegata."""
-    az = {"tipo": tipo, "payload": payload}
-    az["descrizione"] = descrivi_azione(az)
-    return az
+    az = {"id": "az-1", "tipo": tipo, "payload": payload}
+    return {"azioni": [az], "descrizione": descrivi_azione(az)}
 
 
 def test_descrivi_azione_send_email():
@@ -62,10 +61,26 @@ def test_descrivi_azione_close_commitment():
 
 
 def test_descrivi_azione_senza_descrizione_fallback_minimale():
-    """Difesa: un server vecchio che non allega descrizione non deve rompere
-    il CLI - fallback su una riga col tipo."""
-    reso = _descrivi_azione({"tipo": "qualcosa_di_nuovo", "payload": {"x": 1}})
-    assert "qualcosa_di_nuovo" in reso
+    """Difesa: un server che non allega descrizione non deve rompere il CLI -
+    fallback su una riga con quante azioni ci sono."""
+    reso = _descrivi_azione({"azioni": [{"id": "az-1"}, {"id": "az-2"}]})
+    assert "2 azioni" in reso
+
+
+def test_descrivi_gruppo_elenca_le_voci_non_solo_la_prima():
+    """Il bug: 21 cestinamenti mostravano una riga sola. Da terminale si
+    conferma tutto il gruppo, ma le voci vanno lette tutte prima."""
+    pendenti = [
+        {"id": f"az-{i}", "tipo": "trash_email",
+         "payload": {"message_id": f"m{i}", "mittente": f"Tizio {i}", "oggetto": f"Ogg {i}"}}
+        for i in range(21)
+    ]
+    reso = _descrivi_azione({"azioni": pendenti, "descrizione": descrivi_gruppo(pendenti)})
+
+    assert "21 mail nel cestino" in reso
+    assert "Tizio 0 · Ogg 0" in reso
+    assert "Tizio 20 · Ogg 20" in reso
+    assert reso.count("·") >= 21
 
 
 def test_interpreta_risposta_affermative():

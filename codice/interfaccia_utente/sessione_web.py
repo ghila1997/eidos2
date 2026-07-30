@@ -15,7 +15,7 @@ import logging
 from typing import Awaitable, Callable
 
 from orchestratore import agente, azioni, conversazione, streaming
-from orchestratore.descrizioni_azioni import descrivi_azione
+from orchestratore.descrizioni_azioni import descrivi_gruppo
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +64,16 @@ async def gestisci_sessione(
         if not testo:
             continue
 
-        # Se c'è già un'azione da confermare, non si avvia un nuovo turno: si
-        # rimanda al client la **scheda** di quell'azione (Tappa 7.2), non un
-        # errore rosso. `azione_bloccante` scarta da sola una pendente scaduta
+        # Se c'è già qualcosa da confermare, non si avvia un nuovo turno: si
+        # rimanda al client la **scheda** di quelle azioni (Tappa 7.2), non un
+        # errore rosso. `azioni_bloccanti` scarta da sole le pendenti scadute
         # (TTL pigra), così una scheda dimenticata non blocca la chat.
-        azione_pendente = await azioni.azione_bloccante(tenant_id)
-        if azione_pendente is not None:
-            azione_pendente["descrizione"] = descrivi_azione(azione_pendente)
-            await invia({"evento": "azione_in_attesa", "azione": azione_pendente})
+        pendenti = await azioni.azioni_bloccanti(tenant_id)
+        if pendenti:
+            await invia({
+                "evento": "azione_in_attesa",
+                "azione": {"azioni": pendenti, "descrizione": descrivi_gruppo(pendenti)},
+            })
             continue
 
         try:

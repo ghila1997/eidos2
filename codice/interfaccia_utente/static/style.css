@@ -191,11 +191,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   color: var(--accent); margin-top: 4px; white-space: pre-wrap; word-break: break-word;
   animation: ambin 0.35s both;
 }
-.amb-esito {
-  font-family: 'Space Mono', ui-monospace, monospace; font-size: 12px; color: #7fe8b0;
-  margin-top: 3px; animation: ambin 0.35s both;
-}
-.amb-esito .k { margin-right: 6px; font-weight: 700; }
+/* .amb-esito rimossa: l'esito di un'azione confermata è ora una riga di log
+   come le altre (.amb-step.done), non una corsia grafica a parte. */
 @keyframes ambin { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 
 /* READING (cronologia espansa): la STESSA superficie che si allunga, non un
@@ -300,6 +297,31 @@ body.convo-open #essere-vivente-wrap { filter: blur(5px); opacity: 0.4; transiti
   max-height: 30vh; overflow-y: auto;
 }
 .cf-note { font-size: 12.5px; color: var(--danger); }
+/* lista delle voci quando la scheda ne raccoglie più di una (es. 21 mail nel
+   cestino). Scorre dentro di sé: la scheda non deve crescere fino a mangiare
+   la conversazione, ma le voci vanno viste tutte prima di dire sì. */
+.cf-lista {
+  list-style: none; margin: 0; padding: 8px 0; max-height: 34vh; overflow-y: auto;
+  border-top: 1px solid var(--panel-border); display: flex; flex-direction: column; gap: 1px;
+}
+.cf-voce {
+  display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 8px;
+  font-size: 12.5px; color: var(--text);
+}
+.cf-voce:hover { background: var(--glass-hi); }
+.cf-voce-testo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* esclusa: resta visibile e barrata, non sparisce - così si vede cosa si sta
+   NON facendo, e si può rimettere dentro con lo stesso pulsante. */
+.cf-voce.fuori .cf-voce-testo { text-decoration: line-through; color: var(--muted); opacity: 0.6; }
+.cf-voce-x {
+  flex: none; margin: 0; padding: 0; width: 22px; height: 22px; line-height: 1;
+  font-size: 13px; border-radius: 6px; background: transparent; border: 1px solid transparent;
+  color: var(--muted); cursor: pointer; opacity: 0; transition: opacity 0.15s, color 0.15s;
+}
+.cf-voce:hover .cf-voce-x, .cf-voce.fuori .cf-voce-x, .cf-voce-x:focus-visible { opacity: 1; }
+.cf-voce-x:hover { color: var(--danger); border-color: var(--panel-border); }
+.cf-voce.fuori .cf-voce-x:hover { color: var(--text); }
+.cf-rimaste { font-size: 11px; color: var(--muted); margin-right: 4px; }
 /* riga finale: la domanda a sinistra, i pulsanti a destra, staccata da un
    filetto sottile. La domanda è una piccola etichetta, non testo di corpo. */
 .confirm-actions {
@@ -312,6 +334,11 @@ body.convo-open #essere-vivente-wrap { filter: blur(5px); opacity: 0.4; transiti
 }
 .confirm-actions button.enter {
   margin: 0; text-transform: none; letter-spacing: 0.04em; font-size: 12.5px; padding: 9px 16px;
+}
+/* "Eseguo 30 azioni…": un gruppo grande impiega qualche secondo e un pulsante
+   solo disabilitato leggeva come schermata piantata. Pulsa: sta lavorando. */
+.confirm-actions button.enter.in-corso {
+  opacity: 1; cursor: progress; animation: pulseDot 1.1s ease-in-out infinite;
 }
 .confirm-actions button.secondary {
   color: var(--text-secondary); background: var(--glass); border: 1px solid var(--panel-border); border-radius: 11px;

@@ -38,11 +38,11 @@ class FakeMotore:
             yield e
 
 
-async def _raccogli(eventi, monkeypatch, azione_pendente=None):
-    async def fake_pendente(tenant_id):
-        return azione_pendente
+async def _raccogli(eventi, monkeypatch, azioni_pendenti=()):
+    async def fake_pendenti(tenant_id):
+        return list(azioni_pendenti)
 
-    monkeypatch.setattr(azioni, "ottieni_azione_pendente_tenant", fake_pendente)
+    monkeypatch.setattr(azioni, "ottieni_azioni_pendenti_tenant", fake_pendenti)
     out = []
     async for ev in streaming.traduci_turno(FakeMotore(eventi), "ciao", canale="testo", tenant_id=TENANT):
         out.append(ev)
@@ -73,18 +73,53 @@ async def test_tool_result_con_errore_da_esito_errore(monkeypatch):
 async def test_fine_arricchisce_azione_con_descrizione(monkeypatch):
     azione = {"id": "az-1", "tipo": "send_email",
               "payload": {"destinatario": "x@y.it", "oggetto": "Ciao", "corpo": "Testo"}}
-    out = await _raccogli([_result("pronto")], monkeypatch, azione_pendente=azione)
+    out = await _raccogli([_result("pronto")], monkeypatch, azioni_pendenti=[azione])
 
     fine = out[-1]
     assert fine["evento"] == "fine"
     assert fine["azione_in_attesa"]["descrizione"]["titolo"] == "Invio email"
+    # una sola azione: scheda identica a prima, non "1 azione da confermare"
+    assert fine["azione_in_attesa"]["descrizione"]["multipla"] is False
+
+
+async def test_fine_con_piu_azioni_le_raggruppa_in_una_scheda_sola(monkeypatch):
+    """Il caso del bug: 21 trash_email in un turno davano 21 conferme, di cui
+    l'utente ne vedeva UNA (le altre riemergevano un messaggio alla volta).
+    Ora l'evento `fine` porta l'intero gruppo in una scheda."""
+    pendenti = [
+        {"id": f"az-{i}", "tipo": "trash_email",
+         "payload": {"message_id": f"m{i}", "mittente": f"Tizio {i}", "oggetto": f"Oggetto {i}"}}
+        for i in range(21)
+    ]
+    out = await _raccogli([_result("pronto")], monkeypatch, azioni_pendenti=pendenti)
+
+    scheda = out[-1]["azione_in_attesa"]
+    assert len(scheda["azioni"]) == 21
+    descrizione = scheda["descrizione"]
+    assert descrizione["multipla"] is True
+    assert descrizione["titolo"] == "21 mail nel cestino"
+    assert len(descrizione["voci"]) == 21
+    # ogni voce porta il suo id (serve per escluderla) e testo leggibile
+    assert descrizione["voci"][0]["id"] == "az-0"
+    assert descrizione["voci"][0]["riepilogo"] == "Tizio 0 · Oggetto 0"
 
 
 async def test_fine_senza_azione_non_ha_descrizione(monkeypatch):
-    out = await _raccogli([_result("pronto")], monkeypatch, azione_pendente=None)
+    out = await _raccogli([_result("pronto")], monkeypatch, azioni_pendenti=[])
     assert out[-1] == {"evento": "fine", "risposta": "pronto", "azione_in_attesa": None}
 
 
 async def test_etichetta_tool_sconosciuto_ricade_sul_nome_pulito():
     assert streaming.etichetta_tool("mcp__eidos__qualcosa_nuovo") == "qualcosa_nuovo"
     assert streaming.etichetta_tool("Read") == "Read"
+
+
+async def test_etichetta_trash_email_non_dice_che_e_gia_fatto():
+    """Trovato a STOP 2 (2026-07-30): "Cestino la mail" col ✓ leggeva come
+    "fatto", ma a quel punto l'azione è solo proposta - parte alla conferma.
+    Tutte le scritture gated devono stare al gerundio."""
+    assert streaming.etichetta_tool("mcp__eidos__trash_email") == "Preparo il cestinamento"
+    for tool in ("send_email", "reply_email", "forward_email", "send_draft",
+                 "trash_email", "trash_file", "delete_event", "forget_document"):
+        etichetta = streaming.etichetta_tool(f"mcp__eidos__{tool}")
+        assert etichetta.startswith("Preparo"), f"{tool} non è al gerundio: {etichetta}"

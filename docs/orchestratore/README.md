@@ -244,8 +244,23 @@ impegni) — vedi [docs/eval.md](../eval.md).
   (`search_email`)/Calendar, la fonte vera.
 - `send_email`/`reply_email`/`forward_email`/`send_draft`/`trash_email` e
   `create_event`/`update_event`/`delete_event` **con partecipanti** non eseguono mai subito:
-  creano un'azione in `azioni_pending`, solo `/azioni/{id}/conferma` (chiamata dall'utente, mai
-  dal modello) esegue l'azione vera — coperto da `test_azioni.py`/`test_tools.py`
+  creano un'azione in `azioni_pending`, solo `/azioni/{id}/conferma` e
+  `/azioni/conferma-gruppo` (chiamati dall'utente, mai dal modello) eseguono l'azione vera —
+  coperto da `test_azioni.py`/`test_tools.py`
+- **Un turno che prepara N azioni chiede UNA conferma sola** (`descrivi_gruppo` →
+  `conferma_gruppo`). Il "gruppo" non ha una colonna sua: siccome un nuovo turno è bloccato
+  finché esiste una pendente, tutte le `in_attesa` di un tenant vengono per forza dallo stesso
+  turno. Ogni voce resta escludibile singolarmente dalla scheda; il gate non cambia — ogni
+  azione passa comunque da `conferma_azione`, si esegue solo poche alla volta
+  (`_PARALLELE_PER_GRUPPO`) invece che in fila
+- **Il payload di un'azione porta anche l'etichetta leggibile** (mittente/oggetto di una mail,
+  nome del file, titolo dell'evento), presa dal client API e mai dal modello: una scheda che
+  dice solo "cestino il messaggio 19fb2ffd5cc149c7" non è confermabile da un umano
+- **Dopo la conferma il modello è cieco** (il gate sta fuori dal suo turno e non gli risponde):
+  senza aiuto rispondeva "non ancora" ad azioni già eseguite e le riproponeva — doppio invio
+  reale su `send_email`. Il turno successivo riceve `[eseguito dopo la tua conferma: ...]`
+  (`agente.annota_esito`), e il system prompt gli vieta di dedurre dal proprio contesto che
+  qualcosa non è stato fatto
 - Scope Google Calendar: `calendar.events` da solo **non** copre `calendarList.list` (l'elenco
   calendari, usato per la ricerca multi-calendario) — serve anche `calendar.calendarlist.readonly`.
   Trovato a STOP 2 testando con dati reali (403 silenzioso, il modello rispondeva "nessun evento"

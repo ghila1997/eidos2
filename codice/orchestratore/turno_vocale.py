@@ -120,8 +120,8 @@ async def gestisci_sessione_vocale(
                 nuovo_testo = messaggio["testo"]
 
                 if not tentativo_in_corso:
-                    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
-                    if azione_pendente is not None:
+                    pendenti = await azioni.ottieni_azioni_pendenti_tenant(tenant_id)
+                    if pendenti:
                         await invia({
                             "evento": "errore",
                             "messaggio": "C'e' un'azione in attesa di conferma, risolvila prima di continuare.",
@@ -144,8 +144,8 @@ async def gestisci_sessione_vocale(
                     # tentativo partirebbe libero con un'azione non
                     # confermata gia' nel DB (CLAUDE.md, gate unico, nessuna
                     # eccezione per casi che "sembrano" a basso rischio).
-                    azione_pendente = await azioni.ottieni_azione_pendente_tenant(tenant_id)
-                    if azione_pendente is not None:
+                    pendenti = await azioni.ottieni_azioni_pendenti_tenant(tenant_id)
+                    if pendenti:
                         await invia({
                             "evento": "errore",
                             "messaggio": "C'e' un'azione in attesa di conferma, risolvila prima di continuare.",

@@ -22,7 +22,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
-import httpx
+from common import http_condiviso
 
 from . import oauth
 
@@ -68,7 +68,7 @@ async def lista_messaggi_nuovi(
     `users.getProfile` - dedup a valle (import_mail.py) copre gli eventuali
     messaggi già importati ripescati da un fetch pieno."""
     if cursore:
-        async with httpx.AsyncClient() as client:
+        async with http_condiviso.sessione() as client:
             resp = await client.get(
                 f"{_API_BASE}/history",
                 params={
@@ -90,7 +90,7 @@ async def lista_messaggi_nuovi(
             raise GmailError(f"Gmail history.list fallita: {resp.status_code}")
         # 404: historyId scaduto lato Gmail - fallback a fetch pieno sotto
 
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/messages",
             params={"maxResults": "50"},
@@ -100,7 +100,7 @@ async def lista_messaggi_nuovi(
         raise GmailError(f"Gmail messages.list fallita: {resp.status_code}")
     ids = [m["id"] for m in resp.json().get("messages", [])]
 
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         profilo = await client.get(f"{_API_BASE}/profile", headers=_headers(access_token))
     if profilo.status_code != 200:
         raise GmailError(f"Gmail getProfile fallita: {profilo.status_code}")
@@ -136,7 +136,7 @@ def _estrai_allegati(payload: dict) -> list[dict[str, Any]]:
 
 
 async def ottieni_messaggio(access_token: str, message_id: str) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/messages/{message_id}",
             params={"format": "full"},
@@ -167,7 +167,7 @@ async def cerca_messaggi(
     ritorna solo gli id: i metadati (mittente/oggetto/data/anteprima/non letto)
     si prendono con un `get` per messaggio, fatti in parallelo. Un messaggio
     sparito tra list e get non fa fallire l'intera ricerca (viene saltato)."""
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/messages",
             params={"q": query, "maxResults": str(max_results)},
@@ -179,13 +179,16 @@ async def cerca_messaggi(
     if not messaggi:
         return []
     metadati = await asyncio.gather(
-        *(_metadati_messaggio(access_token, m["id"]) for m in messaggi)
+        *(metadati_messaggio(access_token, m["id"]) for m in messaggi)
     )
     return [m for m in metadati if m is not None]
 
 
-async def _metadati_messaggio(access_token: str, message_id: str) -> dict[str, Any] | None:
-    async with httpx.AsyncClient() as client:
+async def metadati_messaggio(access_token: str, message_id: str) -> dict[str, Any] | None:
+    """Mittente/oggetto/data di un messaggio senza scaricarne il corpo. Pubblica
+    perche' la usa anche `tools.py`: una scheda di conferma che dice solo
+    "cestino il messaggio 19fb2ffd5cc149c7" non e' confermabile da un umano."""
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/messages/{message_id}",
             params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
@@ -210,7 +213,7 @@ async def ottieni_thread(access_token: str, thread_id: str) -> dict[str, Any]:
     """La conversazione INTERA (`threads.get`): tutti i messaggi del thread in
     ordine, con mittente/data/oggetto/corpo. Per rispondere con il contesto
     della conversazione, non di un singolo messaggio."""
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/threads/{thread_id}",
             params={"format": "full"},
@@ -233,7 +236,7 @@ async def ottieni_thread(access_token: str, thread_id: str) -> dict[str, Any]:
 
 
 async def scarica_allegato(access_token: str, message_id: str, attachment_id: str) -> bytes:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/messages/{message_id}/attachments/{attachment_id}",
             headers=_headers(access_token),
@@ -297,7 +300,7 @@ async def invia_messaggio(
     }
     if thread_id:
         payload["threadId"] = thread_id
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/messages/send", headers=_headers(access_token), json=payload
         )
@@ -372,7 +375,7 @@ async def crea_bozza(
     cc: str | None = None,
     bcc: str | None = None,
 ) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/drafts",
             headers=_headers(access_token),
@@ -383,8 +386,29 @@ async def crea_bozza(
     return resp.json()
 
 
+async def metadati_bozza(access_token: str, draft_id: str) -> dict[str, Any] | None:
+    """Destinatario/oggetto di una bozza, per la scheda di conferma dell'invio.
+    None se la bozza non c'e' piu' o Gmail non risponde: la conferma resta
+    possibile (con l'id grezzo), non si blocca un invio per un'etichetta."""
+    async with http_condiviso.sessione() as client:
+        resp = await client.get(
+            f"{_API_BASE}/drafts/{draft_id}",
+            params={"format": "metadata", "metadataHeaders": ["To", "Subject"]},
+            headers=_headers(access_token),
+        )
+    if resp.status_code != 200:
+        return None
+    messaggio = resp.json().get("message") or {}
+    headers = {h["name"].lower(): h["value"] for h in (messaggio.get("payload") or {}).get("headers", [])}
+    return {
+        "draft_id": draft_id,
+        "destinatario": headers.get("to", ""),
+        "oggetto": headers.get("subject", ""),
+    }
+
+
 async def invia_bozza(access_token: str, draft_id: str) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/drafts/send", headers=_headers(access_token), json={"id": draft_id}
         )
@@ -404,7 +428,7 @@ async def modifica_messaggio(
         body["addLabelIds"] = aggiungi_label
     if rimuovi_label:
         body["removeLabelIds"] = rimuovi_label
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/messages/{message_id}/modify", headers=_headers(access_token), json=body
         )
@@ -417,7 +441,7 @@ async def cestina_messaggio(access_token: str, message_id: str) -> dict:
     """Sposta nel cestino (reversibile) - non elimina in modo permanente,
     coerente con lo scope gmail.modify e con cosa fa davvero un umano
     quando "cancella" una mail da Gmail."""
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/messages/{message_id}/trash", headers=_headers(access_token)
         )
@@ -427,7 +451,7 @@ async def cestina_messaggio(access_token: str, message_id: str) -> dict:
 
 
 async def lista_etichette(access_token: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(f"{_API_BASE}/labels", headers=_headers(access_token))
     if resp.status_code != 200:
         raise GmailError(f"Gmail labels.list fallita: {resp.status_code}")
@@ -435,7 +459,7 @@ async def lista_etichette(access_token: str) -> list[dict[str, Any]]:
 
 
 async def crea_etichetta(access_token: str, nome: str) -> dict:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/labels",
             headers=_headers(access_token),

@@ -1,5 +1,6 @@
 """Trappola centrale della Tappa 2: send_email non deve mai inviare senza
 conferma esplicita, e la conferma deve restare scoped al tenant giusto."""
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -537,27 +538,26 @@ async def test_conferma_si_su_azione_scaduta_non_invia(respx_mock, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_azione_bloccante_ignora_e_marca_una_pendente_scaduta(respx_mock):
+async def test_azioni_bloccanti_ignora_e_marca_una_pendente_scaduta(respx_mock):
     """Scadenza pigra: una pendente scaduta viene marcata 'scaduta' e non
     blocca più - la nuova richiesta può procedere."""
     _mock_azione(respx_mock, TENANT_A, created_at=_ts(-timedelta(hours=3)))
     patch = respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
         return_value=httpx.Response(200, json=[]))
 
-    bloccante = await azioni.azione_bloccante(TENANT_A)
+    bloccanti = await azioni.azioni_bloccanti(TENANT_A)
 
-    assert bloccante is None
+    assert bloccanti == []
     assert patch.called  # marcata scaduta
 
 
 @pytest.mark.asyncio
-async def test_azione_bloccante_ritorna_una_pendente_fresca(respx_mock):
+async def test_azioni_bloccanti_ritorna_una_pendente_fresca(respx_mock):
     _mock_azione(respx_mock, TENANT_A, created_at=_ts(-timedelta(minutes=5)))
 
-    bloccante = await azioni.azione_bloccante(TENANT_A)
+    bloccanti = await azioni.azioni_bloccanti(TENANT_A)
 
-    assert bloccante is not None
-    assert bloccante["id"] == AZIONE_ID
+    assert [a["id"] for a in bloccanti] == [AZIONE_ID]
 
 
 @pytest.mark.asyncio
@@ -577,3 +577,239 @@ async def test_conferma_close_commitment_chiude_impegno(respx_mock, monkeypatch)
 
     assert risultato["stato"] == azioni.STATO_INVIATA
     assert chiusi == [(TENANT_A, "impegno-1")]
+
+
+# --- conferme multiple in un turno solo (fix "21 mail, 1 sola conferma") -----
+# Il bug reale: "metti nel cestino queste 21 mail" creava 21 azioni pending,
+# la UI ne mostrava UNA (limit=1, senza order) e le altre 20 riemergevano una
+# per messaggio scritto. Ora sono un gruppo: una scheda, una decisione.
+
+def _mock_gruppo(respx_mock, azioni_righe: list[dict]):
+    """Le pendenti del tenant come le torna PostgREST, in ordine di creazione."""
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=azioni_righe)
+    )
+
+
+def _riga_trash(indice: int, created_at: str | None = None) -> dict:
+    riga = {
+        "id": f"az-{indice}",
+        "tenant_id": TENANT_A,
+        "tipo": azioni.TIPO_TRASH_EMAIL,
+        "payload": {"message_id": f"m{indice}", "mittente": f"Tizio {indice}",
+                    "oggetto": f"Oggetto {indice}"},
+        "stato": azioni.STATO_IN_ATTESA,
+    }
+    if created_at is not None:
+        riga["created_at"] = created_at
+    return riga
+
+
+@pytest.mark.asyncio
+async def test_ottieni_pendenti_ritorna_tutte_in_ordine_non_una_sola(respx_mock):
+    """Il cuore del bug: 21 pendenti devono tornare tutte e 21, in ordine di
+    creazione (prima si leggeva con limit=1 e senza order)."""
+    _mock_gruppo(respx_mock, [_riga_trash(i) for i in range(21)])
+
+    pendenti = await azioni.ottieni_azioni_pendenti_tenant(TENANT_A)
+
+    assert [a["id"] for a in pendenti] == [f"az-{i}" for i in range(21)]
+    richiesta = respx_mock.calls.last.request
+    assert "limit=1" not in str(richiesta.url)
+    assert "order=created_at.asc" in str(richiesta.url)
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_esegue_tutte_le_confermate_con_una_decisione(respx_mock, monkeypatch):
+    righe = [_riga_trash(i) for i in range(21)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    cestinate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        cestinate.append(message_id)
+        return {"id": message_id}
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    risultato = await azioni.conferma_gruppo(
+        TENANT_A, {f"az-{i}": True for i in range(21)}
+    )
+
+    assert cestinate == [f"m{i}" for i in range(21)]
+    assert risultato["esito"] == "21 mail spostate nel cestino"
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_parziale_non_esegue_le_escluse(respx_mock, monkeypatch):
+    """Escludere una voce dalla scheda non deve rifiutare tutto il gruppo, e
+    la esclusa non deve partire nemmeno per sbaglio."""
+    righe = [_riga_trash(i) for i in range(3)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    cestinate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        cestinate.append(message_id)
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    risultato = await azioni.conferma_gruppo(
+        TENANT_A, {"az-0": True, "az-1": False, "az-2": True}
+    )
+
+    assert cestinate == ["m0", "m2"]  # la esclusa non è mai partita
+    assert risultato["esito"] == "2 mail spostate nel cestino, 1 esclusa"
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_una_fallita_non_ferma_le_altre(respx_mock, monkeypatch):
+    """Trappola: un errore di rete sulla settima mail non deve annullare le
+    altre venti già decise, e non deve essere nascosto."""
+    righe = [_riga_trash(i) for i in range(3)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    cestinate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        if message_id == "m1":
+            raise gmail_client.GmailError("Gmail 500")
+        cestinate.append(message_id)
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    risultato = await azioni.conferma_gruppo(
+        TENANT_A, {"az-0": True, "az-1": True, "az-2": True}
+    )
+
+    assert cestinate == ["m0", "m2"]  # la terza è partita comunque
+    assert risultato["esito"] == "2 mail spostate nel cestino, 1 non riuscita"
+    assert [e["stato"] for e in risultato["esiti"]][1] == azioni.STATO_ERRORE
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_voce_gia_risolta_non_blocca_il_resto(respx_mock, monkeypatch):
+    """Con 21 voci è normale che una sia già stata risolta altrove: deve
+    risultare 'gia_risolta' senza far fallire l'intera conferma."""
+    righe = [
+        _riga_trash(0),
+        {**_riga_trash(1), "stato": azioni.STATO_INVIATA},
+    ]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        return None
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    risultato = await azioni.conferma_gruppo(TENANT_A, {"az-0": True, "az-1": True})
+
+    stati = [e["stato"] for e in risultato["esiti"]]
+    assert stati == [azioni.STATO_INVIATA, "gia_risolta"]
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_di_altro_tenant_non_esegue_nulla(respx_mock, monkeypatch):
+    """Anti-leak sul gruppo: conoscere gli id non basta, servono del proprio
+    tenant - stessa garanzia della conferma singola."""
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    partite = []
+
+    async def mai(*a, **k):
+        partite.append(a)
+
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", mai)
+
+    risultato = await azioni.conferma_gruppo(TENANT_B, {"az-0": True, "az-1": True})
+
+    assert partite == []
+    assert all(e["stato"] == "non_trovata" for e in risultato["esiti"])
+
+
+@pytest.mark.asyncio
+async def test_azioni_bloccanti_scade_tutto_il_gruppo_in_una_volta(respx_mock):
+    """Prima si marcava scaduta UNA pendente per richiesta: con 19 orfane
+    servivano 19 messaggi per sbloccare la chat. Ora scadono insieme."""
+    vecchie = _ts(-timedelta(hours=3))
+    _mock_gruppo(respx_mock, [_riga_trash(i, created_at=vecchie) for i in range(19)])
+    patch = respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    bloccanti = await azioni.azioni_bloccanti(TENANT_A)
+
+    assert bloccanti == []
+    assert patch.call_count == 1  # una sola PATCH per tutte e 19
+    # `id=in.(...)`: gli id finiscono percent-encoded nella query
+    assert "id=in." in str(patch.calls.last.request.url)
+    assert "az-18" in str(patch.calls.last.request.url)
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_esegue_in_parallelo_limitato(respx_mock, monkeypatch):
+    """30 azioni in fila erano ~12s con la scheda ferma: sembrava bloccata.
+    Il parallelismo è limitato (non una raffica su Gmail) e non salta il
+    gate - ogni azione passa comunque da conferma_azione."""
+    righe = [_riga_trash(i) for i in range(30)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    in_volo = 0
+    picco = 0
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        nonlocal in_volo, picco
+        in_volo += 1
+        picco = max(picco, in_volo)
+        await asyncio.sleep(0.01)   # simula la latenza di rete
+        in_volo -= 1
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    risultato = await azioni.conferma_gruppo(TENANT_A, {f"az-{i}": True for i in range(30)})
+
+    assert picco > 1                                  # non è più tutto in fila
+    assert picco <= azioni._PARALLELE_PER_GRUPPO      # né una raffica
+    assert risultato["esito"] == "30 mail spostate nel cestino"
+    # l'ordine resta quello in cui l'utente ha visto le voci nella scheda
+    assert [e["id"] for e in risultato["esiti"]] == [f"az-{i}" for i in range(30)]

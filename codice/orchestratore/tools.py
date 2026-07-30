@@ -30,6 +30,7 @@ basso rischio: eseguono subito, nessun gate (vedi DECISIONS.md 2026-07-15,
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -49,6 +50,8 @@ from memoria.ingest_documento import (
 
 from . import azioni, calendar_client, drive_client, embeddings, gmail_client
 from .safety import supervisor
+
+logger = logging.getLogger(__name__)
 
 SERVER_NAME = "eidos_orchestratore"
 
@@ -365,7 +368,14 @@ async def _delete_event(tenant_id: str, event_id: str, calendario: str | None = 
 
     azione_id = await azioni.crea_azione_pending(
         tenant_id, azioni.TIPO_DELETE_EVENT,
-        {"event_id": event_id, "notifica": True, "calendario": calendario},
+        {
+            "event_id": event_id, "notifica": True, "calendario": calendario,
+            # Titolo e orario sono già in mano qui: nella scheda di conferma
+            # valgono infinitamente più dell'id dell'evento.
+            "titolo": evento_attuale.get("titolo", ""),
+            "inizio": evento_attuale.get("inizio", ""),
+            "fine": evento_attuale.get("fine", ""),
+        },
     )
     return (
         f"Azione in attesa di conferma (id {azione_id}): cancellazione dell'evento "
@@ -748,12 +758,37 @@ async def _forward_email(
     )
 
 
+async def _etichetta_mail(tenant_id: str, message_id: str) -> dict:
+    """Mittente/oggetto/data da mettere nel payload di un'azione pending, così
+    la scheda di conferma mostra la mail e non il suo id. Presi da Gmail, mai
+    dal modello: sono l'unica cosa che l'utente legge per decidere, e un
+    modello che li "ricorda" può ricordarli sbagliati.
+
+    Se Gmail non risponde si torna un dict vuoto: la descrizione ricade
+    sull'id (vedi `descrizioni_azioni`). Non poter etichettare una mail non è
+    un buon motivo per non poterla cestinare."""
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        metadati = await gmail_client.metadati_messaggio(access_token, message_id)
+    except Exception:
+        logger.warning("metadati mail %s non recuperati per la scheda", message_id, exc_info=True)
+        return {}
+    if metadati is None:
+        return {}
+    return {k: metadati.get(k, "") for k in ("mittente", "oggetto", "data")}
+
+
 async def _send_draft(tenant_id: str, draft_id: str) -> str:
     if rifiuto := await _autorizza(tenant_id, "send_draft", supervisor.CATEGORIA_DISTRUTTIVA):
         return f"Azione non consentita: {rifiuto['message']}"
-    azione_id = await azioni.crea_azione_pending(
-        tenant_id, azioni.TIPO_SEND_DRAFT, {"draft_id": draft_id}
-    )
+    payload = {"draft_id": draft_id}
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        if metadati := await gmail_client.metadati_bozza(access_token, draft_id):
+            payload.update(destinatario=metadati["destinatario"], oggetto=metadati["oggetto"])
+    except Exception:
+        logger.warning("metadati bozza %s non recuperati per la scheda", draft_id, exc_info=True)
+    azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_SEND_DRAFT, payload)
     return (
         f"Azione in attesa di conferma (id {azione_id}): invio della bozza {draft_id}. "
         "L'utente deve confermare esplicitamente prima che parta."
@@ -763,9 +798,8 @@ async def _send_draft(tenant_id: str, draft_id: str) -> str:
 async def _trash_email(tenant_id: str, message_id: str) -> str:
     if rifiuto := await _autorizza(tenant_id, "trash_email", supervisor.CATEGORIA_DISTRUTTIVA):
         return f"Azione non consentita: {rifiuto['message']}"
-    azione_id = await azioni.crea_azione_pending(
-        tenant_id, azioni.TIPO_TRASH_EMAIL, {"message_id": message_id}
-    )
+    payload = {"message_id": message_id, **await _etichetta_mail(tenant_id, message_id)}
+    azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_TRASH_EMAIL, payload)
     return (
         f"Azione in attesa di conferma (id {azione_id}): sposta nel cestino il messaggio "
         f"{message_id}. L'utente deve confermare esplicitamente prima che avvenga."
@@ -943,7 +977,14 @@ async def _share_file(
 async def _trash_file(tenant_id: str, file_id: str) -> str:
     if rifiuto := await _autorizza(tenant_id, "trash_file", supervisor.CATEGORIA_DISTRUTTIVA):
         return f"Azione non consentita: {rifiuto['message']}"
-    azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_TRASH_FILE, {"file_id": file_id})
+    payload = {"file_id": file_id}
+    try:
+        access_token = await drive_client.ottieni_access_token(tenant_id)
+        metadata = await drive_client.ottieni_metadata_file(access_token, file_id)
+        payload["nome"] = metadata.get("nome", "")
+    except Exception:
+        logger.warning("nome file %s non recuperato per la scheda", file_id, exc_info=True)
+    azione_id = await azioni.crea_azione_pending(tenant_id, azioni.TIPO_TRASH_FILE, payload)
     return (
         f"Azione in attesa di conferma (id {azione_id}): sposta nel cestino il file "
         f"{file_id}. L'utente deve confermare esplicitamente prima che avvenga."

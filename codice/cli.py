@@ -60,18 +60,26 @@ def _assicura_sessione(client: httpx.Client) -> None:
 
 
 def _descrivi_azione(azione: dict) -> str:
-    """Rende leggibile un'azione pending a partire dalla `descrizione` che il
-    server allega (fonte unica per CLI e web, Tappa 7.2): il CLI non ricalcola
-    più la descrizione, la formatta soltanto. Fallback minimale se un vecchio
-    server non la mandasse."""
+    """Rende leggibile la scheda di conferma a partire dalla `descrizione` che
+    il server allega (fonte unica per CLI e web, Tappa 7.2): il CLI non
+    ricalcola più la descrizione, la formatta soltanto. Fallback minimale se un
+    vecchio server non la mandasse.
+
+    Con più azioni insieme elenca le voci: da terminale si conferma o si
+    rifiuta tutto il gruppo, escludere una singola voce è possibile solo dalla
+    UI web (il CLI non ha dove cliccare una × e chiedere "quali no?" a mano
+    riaprirebbe la porta a un fraintendimento su un'azione distruttiva)."""
     d = azione.get("descrizione")
     if not d:
-        return f"azione di tipo '{azione.get('tipo', '?')}'"
+        return f"{len(azione.get('azioni', []))} azioni da confermare"
     righe = [f"{d.get('titolo', '')}".strip()]
-    for r in d.get("dettagli", []):
-        righe.append(f"  {r['etichetta']}: {r['valore']}")
-    if d.get("corpo"):
-        righe.append(f"\n{d['corpo']}")
+    if d.get("multipla"):
+        righe.extend(f"  · {v.get('riepilogo', '')}" for v in d.get("voci", []))
+    else:
+        for r in d.get("dettagli", []):
+            righe.append(f"  {r['etichetta']}: {r['valore']}")
+        if d.get("corpo"):
+            righe.append(f"\n{d['corpo']}")
     return "\n".join(righe).strip()
 
 
@@ -97,25 +105,24 @@ def _interpreta_risposta(testo: str) -> bool | None:
     return None
 
 
-def _chiedi_conferma(client: httpx.Client, azione_id: str) -> None:
+def _chiedi_conferma(client: httpx.Client, azione: dict) -> None:
+    ids = [a["id"] for a in azione.get("azioni", [])]
+    if not ids:
+        return
     while True:
         conferma = _interpreta_risposta(input("Confermi? [sì/no]: "))
         if conferma is not None:
             break
         print("Rispondi con un sì o un no chiaro (es. 'sì', 'confermo', 'no', 'annulla').")
-    resp = client.post(f"/azioni/{azione_id}/conferma", json={"conferma": conferma})
+
+    resp = client.post("/azioni/conferma-gruppo", json={"decisioni": {i: conferma for i in ids}})
     if resp.status_code != 200:
         print(f"Errore nella conferma ({resp.status_code}): {resp.text}")
         return
-    stato = resp.json()["stato"]
-    if stato == "confermata_inviata":
-        print("Fatto.\n")
-    elif stato == "rifiutata":
+    if not conferma:
         print("Azione annullata.\n")
-    elif stato == "scaduta":
-        print("Azione scaduta (troppo tempo trascorso), richiedila di nuovo.\n")
-    else:
-        print(f"Stato azione: {stato}\n")
+        return
+    print(f"{resp.json()['esito']}\n")
 
 
 def main() -> None:
@@ -127,7 +134,7 @@ def main() -> None:
         while True:
             try:
                 if azione_in_attesa is not None:
-                    _chiedi_conferma(client, azione_in_attesa["id"])
+                    _chiedi_conferma(client, azione_in_attesa)
                     azione_in_attesa = None
                     continue
 
@@ -139,9 +146,8 @@ def main() -> None:
                 if resp.status_code == 409:
                     dettaglio = resp.json()["detail"]
                     azione_in_attesa = {
-                        "id": dettaglio["azione_id"],
-                        "tipo": dettaglio["tipo"],
-                        "payload": dettaglio["payload"],
+                        "azioni": dettaglio["azioni"],
+                        "descrizione": dettaglio["descrizione"],
                     }
                     _mostra_conferma(azione_in_attesa)
                     continue

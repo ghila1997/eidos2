@@ -23,7 +23,7 @@ import json
 import uuid
 from typing import Any
 
-import httpx
+from common import http_condiviso
 
 from . import oauth_core, oauth_drive
 
@@ -108,7 +108,7 @@ async def cerca_file(
         clausole.append(f"'{cartella_id}' in parents")
     q = " and ".join(clausole) if clausole else "trashed = false"
 
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/files",
             params={"q": q, "fields": f"files({_CAMPI_FILE})", "pageSize": "50"},
@@ -124,7 +124,7 @@ async def elenca_cartella(access_token: str, cartella_id: str = "root") -> list[
 
 
 async def ottieni_metadata_file(access_token: str, file_id: str) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/files/{file_id}",
             params={"fields": _CAMPI_FILE},
@@ -141,7 +141,7 @@ async def leggi_contenuto_file(access_token: str, file_id: str) -> dict[str, Any
 
     if mime in _MIME_EXPORT:
         mime_export = _MIME_EXPORT[mime]
-        async with httpx.AsyncClient() as client:
+        async with http_condiviso.sessione() as client:
             resp = await client.get(
                 f"{_API_BASE}/files/{file_id}/export",
                 params={"mimeType": mime_export},
@@ -152,7 +152,7 @@ async def leggi_contenuto_file(access_token: str, file_id: str) -> dict[str, Any
         return {**meta, "testo": resp.text, "binario": False}
 
     if mime.startswith("text/") or mime in ("application/json",):
-        async with httpx.AsyncClient() as client:
+        async with http_condiviso.sessione() as client:
             resp = await client.get(
                 f"{_API_BASE}/files/{file_id}",
                 params={"alt": "media"},
@@ -162,7 +162,7 @@ async def leggi_contenuto_file(access_token: str, file_id: str) -> dict[str, Any
             raise DriveError(f"Drive files.get(alt=media) fallita: {resp.status_code}")
         return {**meta, "testo": resp.text, "binario": False}
 
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/files/{file_id}",
             params={"alt": "media"},
@@ -177,7 +177,7 @@ async def crea_cartella(access_token: str, nome: str, cartella_padre_id: str | N
     body: dict[str, Any] = {"name": nome, "mimeType": MIME_FOLDER}
     if cartella_padre_id:
         body["parents"] = [cartella_padre_id]
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/files", params={"fields": _CAMPI_FILE}, headers=_headers(access_token), json=body
         )
@@ -197,7 +197,7 @@ async def crea_file(
     if cartella_padre_id:
         metadata["parents"] = [cartella_padre_id]
     corpo, content_type = _costruisci_multipart(metadata, contenuto, mime_type)
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_UPLOAD_BASE}/files",
             params={"uploadType": "multipart", "fields": _CAMPI_FILE},
@@ -216,7 +216,7 @@ async def aggiorna_contenuto_file(
     revisioni precedenti nella cronologia (non distrugge nulla), coerente
     col trattarla come azione reversibile a basso rischio."""
     corpo, content_type = _costruisci_multipart({}, contenuto, mime_type)
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.patch(
             f"{_UPLOAD_BASE}/files/{file_id}",
             params={"uploadType": "multipart", "fields": _CAMPI_FILE},
@@ -229,7 +229,7 @@ async def aggiorna_contenuto_file(
 
 
 async def rinomina_file(access_token: str, file_id: str, nuovo_nome: str) -> dict[str, Any]:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.patch(
             f"{_API_BASE}/files/{file_id}",
             params={"fields": _CAMPI_FILE},
@@ -247,7 +247,7 @@ async def sposta_file(access_token: str, file_id: str, cartella_destinazione_id:
     il file finisce duplicato in due cartelle invece di spostato."""
     meta = await ottieni_metadata_file(access_token, file_id)
     vecchi_parents = ",".join(meta["cartelle"])
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.patch(
             f"{_API_BASE}/files/{file_id}",
             params={
@@ -270,7 +270,7 @@ async def copia_file(
         body["name"] = nuovo_nome
     if cartella_destinazione_id:
         body["parents"] = [cartella_destinazione_id]
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/files/{file_id}/copy",
             params={"fields": _CAMPI_FILE},
@@ -288,7 +288,7 @@ async def condividi_file(
     body: dict[str, Any] = {"type": "anyone", "role": ruolo} if pubblico else {
         "type": "user", "role": ruolo, "emailAddress": email,
     }
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.post(
             f"{_API_BASE}/files/{file_id}/permissions",
             params={
@@ -304,7 +304,7 @@ async def condividi_file(
 
 
 async def lista_permessi(access_token: str, file_id: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.get(
             f"{_API_BASE}/files/{file_id}/permissions",
             params={"fields": "permissions(id,type,role,emailAddress)"},
@@ -316,7 +316,7 @@ async def lista_permessi(access_token: str, file_id: str) -> list[dict[str, Any]
 
 
 async def revoca_permesso(access_token: str, file_id: str, permission_id: str) -> None:
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.delete(
             f"{_API_BASE}/files/{file_id}/permissions/{permission_id}", headers=_headers(access_token)
         )
@@ -327,7 +327,7 @@ async def revoca_permesso(access_token: str, file_id: str, permission_id: str) -
 async def cestina_file(access_token: str, file_id: str) -> dict[str, Any]:
     """Sposta nel cestino (reversibile) - non elimina in modo permanente,
     stessa scelta già fatta per `gmail_client.cestina_messaggio`."""
-    async with httpx.AsyncClient() as client:
+    async with http_condiviso.sessione() as client:
         resp = await client.patch(
             f"{_API_BASE}/files/{file_id}",
             params={"fields": _CAMPI_FILE},

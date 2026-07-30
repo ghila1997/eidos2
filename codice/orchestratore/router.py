@@ -19,8 +19,8 @@ from pydantic import BaseModel
 
 from fondamenta.auth import get_sessione_corrente
 
-from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, turno_vocale, voce_token
-from .descrizioni_azioni import descrivi_azione
+from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, streaming, turno_vocale, voce_token
+from .descrizioni_azioni import descrivi_gruppo
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +35,24 @@ class ConfermaRequest(BaseModel):
     conferma: bool
 
 
+class ConfermaGruppoRequest(BaseModel):
+    """`{azione_id: sì/no}` per ogni azione della scheda. La UI manda sempre
+    tutto il gruppo, comprese le voci che l'utente ha escluso (a `false`):
+    così un'esclusione è una decisione registrata, non un silenzio."""
+    decisioni: dict[str, bool]
+
+
 async def _blocca_se_azione_pendente(tenant_id: str) -> None:
-    # `azione_bloccante` scarta da sola una pendente scaduta (TTL pigra, Tappa
-    # 7.2): una scheda dimenticata non tiene la chat bloccata per sempre.
-    azione_pendente = await azioni.azione_bloccante(tenant_id)
-    if azione_pendente is not None:
+    # `azioni_bloccanti` scarta da sole le pendenti scadute (TTL pigra, Tappa
+    # 7.2): un gruppo dimenticato non tiene la chat bloccata per sempre.
+    pendenti = await azioni.azioni_bloccanti(tenant_id)
+    if pendenti:
         raise HTTPException(
             status_code=409,
             detail={
                 "messaggio": "C'è un'azione in attesa di conferma, risolvila prima di continuare.",
-                "azione_id": azione_pendente["id"],
-                "tipo": azione_pendente["tipo"],
-                "payload": azione_pendente["payload"],
-                "descrizione": descrivi_azione(azione_pendente),
+                "azioni": pendenti,
+                "descrizione": descrivi_gruppo(pendenti),
             },
         )
 
@@ -65,12 +70,9 @@ async def chat(body: ChatRequest, request: Request):
             if message.subtype == "success" and message.result:
                 pezzi.append(message.result)
 
-    azione_appena_creata = await azioni.ottieni_azione_pendente_tenant(tenant_id)
-    if azione_appena_creata is not None:
-        azione_appena_creata["descrizione"] = descrivi_azione(azione_appena_creata)
     return {
         "risposta": "\n".join(pezzi),
-        "azione_in_attesa": azione_appena_creata,
+        "azione_in_attesa": await streaming.gruppo_in_attesa(tenant_id),
     }
 
 
@@ -135,7 +137,10 @@ async def chat_stream_ws(websocket: WebSocket):
 async def conferma(azione_id: str, body: ConfermaRequest, request: Request):
     sessione = await get_sessione_corrente(request)
     try:
-        return await azioni.conferma_azione(sessione["tenant_id"], azione_id, body.conferma)
+        risultato = await azioni.conferma_azione(sessione["tenant_id"], azione_id, body.conferma)
+        if risultato.get("stato") == azioni.STATO_INVIATA:
+            agente.annota_esito(sessione["tenant_id"], risultato.get("esito", ""))
+        return risultato
     except azioni.AzioneNonTrovata:
         raise HTTPException(status_code=404, detail="azione non trovata")
     except azioni.AzioneGiaRisolta as exc:
@@ -150,6 +155,25 @@ async def conferma(azione_id: str, body: ConfermaRequest, request: Request):
             detail="Non sono riuscito a completare l'azione. Riprova; se persiste "
             "potrebbe servire riconnettere l'account collegato.",
         )
+
+
+@router.post("/azioni/conferma-gruppo")
+async def conferma_gruppo(body: ConfermaGruppoRequest, request: Request):
+    """Risolve in un colpo le N azioni di una scheda. A differenza della
+    conferma singola non solleva 404/409 se una voce non è più valida: con 21
+    azioni è normale che una sia già stata risolta altrove, e non deve
+    impedire le altre 20 - l'esito per voce sta in `esiti`."""
+    sessione = await get_sessione_corrente(request)
+    if not body.decisioni:
+        raise HTTPException(status_code=400, detail="nessuna decisione da applicare")
+    tenant_id = sessione["tenant_id"]
+    risultato = await azioni.conferma_gruppo(tenant_id, body.decisioni)
+    # Il modello deve sapere che è successo: senza questa nota, al turno dopo
+    # risponde "non ancora" a cose già fatte e le ripropone (vedi agente.py,
+    # `_esiti_da_riferire`).
+    if any(e.get("stato") == azioni.STATO_INVIATA for e in risultato["esiti"]):
+        agente.annota_esito(tenant_id, risultato["esito"])
+    return risultato
 
 
 @router.get("/oauth/google/authorize")

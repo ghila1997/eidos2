@@ -45,6 +45,37 @@ async def motore_per(tenant_id: str) -> "MotoreAgente":
         return _motori[tenant_id]
 
 
+# Esiti delle conferme non ancora riferiti al modello, per tenant.
+#
+# Il gate di conferma sta FUORI dal turno dell'agente (è il suo scopo: nessuna
+# azione distruttiva passa dal modello). Il rovescio è che il modello resta
+# cieco su cosa succede dopo la sua proposta: l'ultima cosa che sa è "azione in
+# attesa di conferma". Alla domanda "l'hai fatto?" rispondeva in buona fede
+# "no, non ancora" anche a cose già eseguite — e se l'utente gli diceva "fallo
+# di nuovo" ricreava le stesse azioni da capo. Su un cestinamento è innocuo
+# (ricestinare non fa nulla), su `send_email` sarebbero due mail vere allo
+# stesso destinatario. Trovato a STOP 2 il 2026-07-30, su 11 mail diventate 22
+# azioni.
+#
+# In memoria e non su Supabase di proposito: è un promemoria per il prossimo
+# turno, non un fatto da conservare (la verità di "cosa è stato fatto" resta in
+# Gmail/Calendar, DECISIONS.md 2026-07-29). Perderlo a un riavvio significa un
+# turno senza la nota, non un dato perso.
+_esiti_da_riferire: dict[str, list[str]] = {}
+
+
+def annota_esito(tenant_id: str, esito: str) -> None:
+    """Registra l'esito di una conferma perché il prossimo turno lo sappia."""
+    if esito:
+        _esiti_da_riferire.setdefault(tenant_id, []).append(esito)
+
+
+def _consuma_esiti(tenant_id: str) -> list[str]:
+    """Svuota: una nota va data una volta sola, poi vive nel contesto della
+    sessione come qualunque altro messaggio."""
+    return _esiti_da_riferire.pop(tenant_id, [])
+
+
 async def prescalda(tenant_id: str | None) -> None:
     """Prepara il motore in anticipo all'avvio del server: il primo turno
     dopo un riavvio pagava ~10s di connessione del sottoprocesso (misurato a
@@ -88,13 +119,20 @@ async def _scalda_cache_prompt(motore: "MotoreAgente") -> None:
         )
 
 
-def _prefisso_turno(canale: str) -> str:
+def _prefisso_turno(canale: str, esiti: list[str] | None = None) -> str:
     """Contesto per-turno che il system prompt (fisso) non può più portare.
     Trappola reale (2026-07-15): senza data corrente il modello indovina
     'oggi' sbagliando anche di un giorno — critico per 'domani'/'questa
-    settimana'. Calcolata a ogni turno, non in cache."""
+    settimana'. Calcolata a ogni turno, non in cache.
+
+    `esiti` porta quello che è stato confermato ed eseguito dall'ultimo turno
+    (vedi `annota_esito`): senza, il modello non ha modo di sapere che le
+    azioni che ha proposto sono davvero avvenute."""
     ora = datetime.now(timezone.utc).strftime("%A %d %B %Y, %H:%M UTC")
-    return f"[adesso: {ora}] [canale: {canale}]\n"
+    prefisso = f"[adesso: {ora}] [canale: {canale}]\n"
+    if esiti:
+        prefisso += "[eseguito dopo la tua conferma: " + "; ".join(esiti) + "]\n"
+    return prefisso
 
 
 def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
@@ -181,6 +219,21 @@ def _costruisci_system_prompt(preferenze: dict[str, str]) -> str:
         "ridondante. Fai domande solo per informazioni che ti mancano "
         "davvero (es. orario, chi invitare), mai come doppio controllo "
         "prima di una chiamata che già faresti.\n"
+        "Dopo che hai chiamato il tool NON SAI se l'azione è avvenuta: il "
+        "gate è fuori dal tuo controllo e non ti risponde. L'unico modo per "
+        "saperlo è il prefisso [eseguito dopo la tua conferma: ...] che "
+        "trovi in un messaggio successivo — quelle azioni SONO state "
+        "eseguite davvero.\n"
+        "- Se l'utente chiede 'l'hai fatto?' e non hai visto quel prefisso, "
+        "non rispondere né sì né no: di' che l'hai preparata e che la "
+        "conferma passa dalla scheda, oppure controlla con un tool di "
+        "lettura (es. search_email) come stanno le cose adesso. Rispondere "
+        "'no, non è stato fatto' basandoti sul tuo contesto è sbagliato: il "
+        "tuo contesto si ferma alla proposta.\n"
+        "- Non riproporre MAI la stessa azione perché ti sembra non "
+        "eseguita. Rifarla significa raddoppiarla per davvero (due mail "
+        "identiche allo stesso destinatario). Se l'utente insiste che non è "
+        "successo niente, verifica prima con un tool di lettura.\n"
         "</conferme>"
     )
     if not preferenze:
@@ -286,7 +339,7 @@ class MotoreAgente:
            sparito col container, meglio ripartire puliti che fallire.
         """
         async with self._lock:
-            prompt = _prefisso_turno(canale) + messaggio
+            prompt = _prefisso_turno(canale, _consuma_esiti(self.tenant_id)) + messaggio
             emesso = False
             for tentativo in (1, 2, 3):
                 try:

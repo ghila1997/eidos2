@@ -270,6 +270,20 @@ resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
   esito, cronologia persistente). Rifiniture dei numeri (traslucenza, tempi, arretramento essere) e
   markdown/PWA restano 7.6.
 
+**Tappa 7.3b — Conferme multiple: un turno, una scheda** — ✅ fatto (2026-07-30)
+- Trovato dal founder provando "metti nel cestino queste 21 mail": arrivava **una** conferma, le
+  altre 20 riemergevano un messaggio alla volta. Le pendenti di un turno sono ora **un gruppo** con
+  una scheda sola (voci escludibili una a una), il payload porta l'etichetta leggibile invece
+  dell'id, e l'esito di una conferma rientra nel contesto del modello al turno dopo — senza, Eidos
+  rispondeva "non l'ho fatto" ad azioni eseguite e le riproponeva (doppio invio reale su
+  `send_email`). Client HTTP condiviso per le API Google: conferma di 21 azioni da ~23 s a ~3 s.
+  Vedi DECISIONS.md 2026-07-30 (tre voci).
+- **Finito quando**: una richiesta che prepara N azioni chiede una conferma sola, la scheda mostra
+  mittente/oggetto e non gli id, e alla domanda "l'hai fatto?" l'assistente sa rispondere — ✅
+  verificato dal founder su 11 e 30 mail reali (controllate su Gmail, non sul DB).
+- **Aperto**: il log delle fasi durante l'esecuzione di un gruppo (righe aggregate col contatore,
+  conferma non bloccante con avanzamento reale sul WebSocket) — in corso, stessa sessione.
+
 **Tappa 7.4 — Schede grafiche (`data_presented`)**
 - Renderer client completo (lista/tabella/evento/luogo/grafico/scheda), trascinabili e chiudibili;
   il backend/agente sa emettere **almeno un tipo su dati reali** (es. lista mail trovate, un evento),
