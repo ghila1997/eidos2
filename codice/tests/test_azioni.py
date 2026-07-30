@@ -90,9 +90,11 @@ async def test_conferma_si_invia_mail_una_sola_volta(respx_mock, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_conferma_si_scrive_esito_in_cronologia(respx_mock, monkeypatch):
-    """Tappa 7.3: un'azione eseguita lascia il suo esito nella cronologia della
-    conversazione (punto unico per ogni canale: web/CLI/voce)."""
+async def test_conferma_ritorna_esito_dal_vivo_ma_non_lo_persiste(respx_mock, monkeypatch):
+    """Tappa 7.3 (rivisto 2026-07-29): l'esito ("Mail inviata a X") torna nel
+    payload per la conferma DAL VIVO nella UI, ma NON si scrive in cronologia -
+    le azioni fatte non si tengono (la verità è in Gmail). `conversazione` non
+    deve nemmeno essere toccato da conferma_azione."""
     _mock_azione(respx_mock, TENANT_A)
     respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
         return_value=httpx.Response(200, json=[])
@@ -104,19 +106,20 @@ async def test_conferma_si_scrive_esito_in_cronologia(respx_mock, monkeypatch):
     async def fake_invia(*a, **k):
         return {"id": "msg-1"}
 
-    esiti = []
+    scritture = []
 
-    async def fake_salva_esito(tenant_id, contenuto):
-        esiti.append((tenant_id, contenuto))
+    async def esplodi_se_scrive(*a, **k):
+        scritture.append(a)
 
     monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_ottieni_token)
     monkeypatch.setattr(gmail_client, "invia_messaggio", fake_invia)
-    monkeypatch.setattr(conversazione, "salva_esito", fake_salva_esito)
+    monkeypatch.setattr(conversazione, "salva_turno", esplodi_se_scrive)
 
     risultato = await azioni.conferma_azione(TENANT_A, AZIONE_ID, conferma=True)
 
-    assert esiti == [(TENANT_A, f"Mail inviata a {PAYLOAD['destinatario']}")]
     assert risultato["esito"] == f"Mail inviata a {PAYLOAD['destinatario']}"
+    assert scritture == []  # niente scrittura in cronologia
+    assert not hasattr(conversazione, "salva_esito")  # rimossa: non si persiste più
 
 
 @pytest.mark.asyncio

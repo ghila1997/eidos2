@@ -121,6 +121,10 @@ function assicuraSay() {
 function ambientSay(testo) { assicuraSay(); sayEl.className = 'amb-say'; sayEl.textContent = testo; }
 function ambientErrore(msg) { assicuraSay(); sayEl.className = 'amb-say err'; sayEl.textContent = msg; }
 function ambientEsito(testo) {
+  // L'esito di un'azione vive SOLO nel flusso dal vivo, come gli altri log
+  // (passi/testo): resta finché c'è la conversazione a schermo, poi scorre su
+  // e sparisce. NON si salva in cronologia (niente lista di azioni fatte: la
+  // verità di "cosa ho fatto" è in Gmail/Calendar). Vedi DECISIONS 2026-07-29.
   const row = document.createElement('div');
   row.className = 'amb-esito';
   row.innerHTML = `<span class="k">✓</span>${escapeHTML(testo)}`;
@@ -161,9 +165,6 @@ function renderStorico() {
 function rigaStorico(m) {
   if (m.ruolo === 'utente') {
     return `<div class="turn user"><span class="who">Tu</span><div class="msg">${escapeHTML(m.contenuto)}</div></div>`;
-  }
-  if (m.ruolo === 'esito') {
-    return `<div class="esito-riga"><span class="k">✓</span>${escapeHTML(m.contenuto)}</div>`;
   }
   // un turno che ha solo preparato un'azione può non avere testo: niente bolla vuota
   const testo = m.contenuto ? `<div class="msg">${escapeHTML(m.contenuto)}</div>` : '';
@@ -271,11 +272,8 @@ async function risolviConferma(conferma) {
     const risposta = await r.json();
     chiudiConferma();
     if (risposta.stato === 'confermata_inviata') {
-      // l'esito entra nel flusso ambient e nella cronologia persistita
-      const testo = risposta.esito || 'Fatto';
-      ambientEsito(testo);
-      storico.push({ ruolo: 'esito', contenuto: testo, passi: null });
-      if (convo.classList.contains('open')) renderStorico();
+      // solo conferma dal vivo nel flusso, niente salvataggio in cronologia
+      ambientEsito(risposta.esito || 'Fatto');
       programmaSpegnimento(2000);
     } else if (risposta.stato === 'rifiutata') {
       ambientSay('Annullato.');

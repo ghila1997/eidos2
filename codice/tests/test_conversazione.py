@@ -46,20 +46,9 @@ async def test_salva_turno_mette_i_passi_sul_messaggio_assistente(respx_mock):
 
 
 @pytest.mark.asyncio
-async def test_salva_esito_scrive_un_messaggio_di_ruolo_esito(respx_mock):
-    route = respx_mock.post(TABELLA).mock(return_value=httpx.Response(201, json=[]))
-
-    await conversazione.salva_esito(TENANT, "Mail inviata a marco@studio.it")
-
-    corpo = json.loads(route.calls.last.request.content)
-    assert corpo["ruolo"] == "esito"
-    assert corpo["contenuto"] == "Mail inviata a marco@studio.it"
-    assert corpo["tenant_id"] == TENANT
-
-
-@pytest.mark.asyncio
-async def test_get_messaggi_filtra_sempre_per_tenant_e_ha_un_bound(respx_mock):
-    """Anti-leak + niente fetch illimitato."""
+async def test_get_messaggi_filtra_tenant_bound_e_solo_conversazione(respx_mock):
+    """Anti-leak + niente fetch illimitato + solo la conversazione (gli esiti
+    delle azioni non entrano in cronologia, vedi DECISIONS.md 2026-07-29)."""
     route = respx_mock.get(TABELLA).mock(return_value=httpx.Response(200, json=[]))
 
     await conversazione.get_messaggi(TENANT)
@@ -67,6 +56,7 @@ async def test_get_messaggi_filtra_sempre_per_tenant_e_ha_un_bound(respx_mock):
     params = route.calls.last.request.url.params
     assert params["tenant_id"] == f"eq.{TENANT}"
     assert params["limit"] == str(conversazione.MAX_MESSAGGI)
+    assert params["ruolo"] == "in.(utente,assistente)"
 
 
 @pytest.mark.asyncio
