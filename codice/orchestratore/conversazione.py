@@ -44,11 +44,16 @@ async def salva_turno(
     istante (il default now() li lascerebbe pari)."""
     url, key = supabase_settings()
     base = datetime.now(timezone.utc)
+    # Le due righe devono avere le STESSE chiavi: PostgREST rifiuta un insert
+    # batch con oggetti dalle chiavi diverse (PGRST102 "All object keys must
+    # match"). Quindi `passi` va messo su entrambe (None sull'utente), non solo
+    # sull'assistente - trovato in reale, il mock nei test non lo cattura.
     righe = [
         {
             "tenant_id": tenant_id,
             "ruolo": "utente",
             "contenuto": testo_utente,
+            "passi": None,
             "created_at": base.isoformat(),
         },
         {

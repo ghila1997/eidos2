@@ -30,6 +30,10 @@ async def test_salva_turno_scrive_due_messaggi_utente_poi_assistente(respx_mock)
     assert all(r["tenant_id"] == TENANT for r in righe)
     # ordine garantito: l'assistente ha un created_at successivo all'utente
     assert righe[0]["created_at"] < righe[1]["created_at"]
+    # PGRST102: in un insert batch tutte le righe devono avere le STESSE chiavi,
+    # o PostgREST rifiuta con 400 (bug reale: `passi` solo sull'assistente ->
+    # conversazione mai salvata, mascherato dai mock che non lo verificano).
+    assert set(righe[0].keys()) == set(righe[1].keys())
 
 
 @pytest.mark.asyncio
