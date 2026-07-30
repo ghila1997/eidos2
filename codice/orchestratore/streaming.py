@@ -30,6 +30,9 @@ MESSAGGIO_ERRORE = "Non sono riuscito a elaborare la richiesta, riprova."
 # tool nativo dell'SDK) ricade sul nome pulito - meglio grezzo che sbagliato.
 _ETICHETTE_TOOL = {
     "search_memoria": "Cerco nella memoria",
+    "search_email": "Cerco nella posta",
+    "read_email": "Leggo l'email",
+    "read_thread": "Leggo la conversazione",
     "remember_fact": "Salvo in memoria",
     "list_impegni_aperti": "Controllo gli impegni aperti",
     "propose_commitment": "Preparo un impegno",

@@ -15,6 +15,7 @@ comportamento di un umano che cancella da Gmail.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -156,6 +157,79 @@ async def ottieni_messaggio(access_token: str, message_id: str) -> dict[str, Any
         "corpo": corpo,
         "allegati": _estrai_allegati(body["payload"]),
     }
+
+
+async def cerca_messaggi(
+    access_token: str, query: str, max_results: int = 10
+) -> list[dict[str, Any]]:
+    """Cerca nella casella Gmail LIVE via `messages.list?q=` (sintassi di
+    ricerca Gmail, es. 'from:marco is:unread after:2026/07/01'). `messages.list`
+    ritorna solo gli id: i metadati (mittente/oggetto/data/anteprima/non letto)
+    si prendono con un `get` per messaggio, fatti in parallelo. Un messaggio
+    sparito tra list e get non fa fallire l'intera ricerca (viene saltato)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{_API_BASE}/messages",
+            params={"q": query, "maxResults": str(max_results)},
+            headers=_headers(access_token),
+        )
+    if resp.status_code != 200:
+        raise GmailError(f"Gmail messages.list fallita: {resp.status_code}")
+    messaggi = resp.json().get("messages", [])
+    if not messaggi:
+        return []
+    metadati = await asyncio.gather(
+        *(_metadati_messaggio(access_token, m["id"]) for m in messaggi)
+    )
+    return [m for m in metadati if m is not None]
+
+
+async def _metadati_messaggio(access_token: str, message_id: str) -> dict[str, Any] | None:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{_API_BASE}/messages/{message_id}",
+            params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
+            headers=_headers(access_token),
+        )
+    if resp.status_code != 200:
+        return None
+    body = resp.json()
+    headers = {h["name"].lower(): h["value"] for h in body["payload"].get("headers", [])}
+    return {
+        "message_id": message_id,
+        "thread_id": body.get("threadId"),
+        "mittente": headers.get("from", ""),
+        "oggetto": headers.get("subject", ""),
+        "data": headers.get("date", ""),
+        "anteprima": body.get("snippet", ""),
+        "non_letta": LABEL_UNREAD in body.get("labelIds", []),
+    }
+
+
+async def ottieni_thread(access_token: str, thread_id: str) -> dict[str, Any]:
+    """La conversazione INTERA (`threads.get`): tutti i messaggi del thread in
+    ordine, con mittente/data/oggetto/corpo. Per rispondere con il contesto
+    della conversazione, non di un singolo messaggio."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{_API_BASE}/threads/{thread_id}",
+            params={"format": "full"},
+            headers=_headers(access_token),
+        )
+    if resp.status_code != 200:
+        raise GmailError(f"Gmail threads.get fallita: {resp.status_code}")
+    body = resp.json()
+    messaggi = []
+    for m in body.get("messages", []):
+        headers = {h["name"].lower(): h["value"] for h in m["payload"].get("headers", [])}
+        messaggi.append({
+            "message_id": m["id"],
+            "mittente": headers.get("from", ""),
+            "data": headers.get("date", ""),
+            "oggetto": headers.get("subject", ""),
+            "corpo": _estrai_corpo(m["payload"]) or m.get("snippet", ""),
+        })
+    return {"thread_id": thread_id, "messaggi": messaggi}
 
 
 async def scarica_allegato(access_token: str, message_id: str, attachment_id: str) -> bytes:

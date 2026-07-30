@@ -1083,3 +1083,101 @@ async def test_close_commitment_non_chiude_subito_crea_solo_azione_pending(monke
 
     assert "azione-789" in risultato
     assert "attesa di conferma" in risultato
+
+
+# --- ricerca/lettura inbox live (search_email/read_email/read_thread) ---
+
+@pytest.mark.asyncio
+async def test_search_email_formatta_id_e_stato_non_letto(monkeypatch):
+    async def fake_token(tenant_id):
+        return "tok"
+
+    async def fake_cerca(access_token, query, max_results=10):
+        assert query == "from:marco is:unread"
+        return [{"message_id": "m1", "thread_id": "t1", "mittente": "marco@x.it",
+                 "oggetto": "Preventivo", "data": "28 lug", "anteprima": "ciao", "non_letta": True}]
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cerca_messaggi", fake_cerca)
+
+    ris = await tools._search_email(TENANT, "from:marco is:unread")
+
+    assert "message_id m1" in ris and "thread_id t1" in ris
+    assert "[non letta]" in ris
+    assert "Preventivo" in ris
+
+
+@pytest.mark.asyncio
+async def test_search_email_cappa_max_results(monkeypatch):
+    visto = {}
+
+    async def fake_token(tenant_id):
+        return "tok"
+
+    async def fake_cerca(access_token, query, max_results=10):
+        visto["max"] = max_results
+        return []
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cerca_messaggi", fake_cerca)
+
+    await tools._search_email(TENANT, "x", max_results=100)
+
+    assert visto["max"] == 50
+
+
+@pytest.mark.asyncio
+async def test_search_email_errore_gmail_non_finge_nessun_risultato(monkeypatch):
+    """Stessa trappola di search_events: un errore Gmail non deve diventare
+    'nessuna email' con sicurezza."""
+    async def fake_token(tenant_id):
+        return "tok"
+
+    async def fake_cerca(*a, **k):
+        raise gmail_client.GmailError("500")
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cerca_messaggi", fake_cerca)
+
+    ris = await tools._search_email(TENANT, "x")
+
+    assert "Errore" in ris
+    assert "Nessuna email" not in ris
+
+
+@pytest.mark.asyncio
+async def test_read_thread_mostra_tutti_i_messaggi_in_ordine(monkeypatch):
+    async def fake_token(tenant_id):
+        return "tok"
+
+    async def fake_thread(access_token, thread_id):
+        return {"thread_id": thread_id, "messaggi": [
+            {"message_id": "m1", "mittente": "a@x.it", "data": "d1", "oggetto": "Ciao", "corpo": "primo"},
+            {"message_id": "m2", "mittente": "b@x.it", "data": "d2", "oggetto": "Re: Ciao", "corpo": "secondo"},
+        ]}
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "ottieni_thread", fake_thread)
+
+    ris = await tools._read_thread(TENANT, "t1")
+
+    assert "primo" in ris and "secondo" in ris
+    assert "2 messaggi" in ris
+
+
+@pytest.mark.asyncio
+async def test_tool_registrati_e_allowed_coincidono():
+    """Guardia anti-drift: ogni tool passato a create_sdk_mcp_server DEVE stare
+    anche in ALLOWED_TOOLS (altrimenti il modello non lo può usare) e viceversa
+    (un tool 'permesso' ma non registrato non esiste). Bug reale 2026-07-29:
+    search_email/read_email/read_thread definiti con @tool e in ALLOWED_TOOLS
+    ma NON passati a create_sdk_mcp_server -> invisibili al modello."""
+    from mcp.types import ListToolsRequest
+
+    server = tools.crea_server(TENANT)["instance"]
+    handler = server.request_handlers[ListToolsRequest]
+    res = await handler(ListToolsRequest(method="tools/list"))
+    registrati = {t.name for t in res.root.tools}
+    allowed = {n.split("__", 2)[2] for n in tools.ALLOWED_TOOLS}
+
+    assert registrati == allowed

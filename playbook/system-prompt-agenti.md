@@ -62,6 +62,15 @@
   attesa di conferma vanno chiamati subito, mai rimandati in attesa di una risposta
   dell'utente") — una riga sola, riusabile per ogni tool futuro dello stesso tipo, non un
   paragrafo per tool che farebbe crescere il prompt linearmente con ogni nuovo tool.
+- **Disambiguare due tool che si somigliano** (quale usare quando la scelta non è ovvia) va nelle
+  `description` di *entrambi*, contrapponendoli — "questo è per X; per Y usa l'altro" — non in una
+  regola nel system prompt. Il modello sceglie leggendo i contratti dei tool nel momento della
+  chiamata: una description che nomina l'alternativa è più robusta e co-locata di una riga di prompt
+  lontana, e spesso il modello sbagliava tool solo perché mancava l'altro (esporlo con una
+  description contrapposta risolve da sé). Il system prompt entra solo se serve un comportamento
+  *trasversale* alla scelta (es. "combina più fonti quando ti chiedono tutto su un'entità", che è
+  strategia, non «quale tool»). Prima di aggiungere quella riga al prompt, verifica se bastano le
+  description.
 
 ## 3. Verifica prima di dichiarare finito
 

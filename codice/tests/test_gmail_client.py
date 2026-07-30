@@ -197,3 +197,67 @@ async def test_lista_messaggi_nuovi_con_cursore_scaduto_fa_fallback_a_fetch_pien
 
     assert ids == ["msg-3"]
     assert nuovo_cursore == "11111"
+
+
+# --- ricerca inbox live (search_email/read_thread) ---
+
+@pytest.mark.asyncio
+async def test_cerca_messaggi_metadati_query_e_stato_non_letto(respx_mock):
+    """messages.list da' solo gli id: i metadati arrivano da un get per
+    messaggio (in parallelo). La query e il maxResults vanno a list; lo stato
+    'non letta' viene dai labelIds."""
+    respx_mock.get(f"{_API_BASE}/messages").mock(
+        return_value=httpx.Response(200, json={"messages": [{"id": "m1"}, {"id": "m2"}]})
+    )
+    respx_mock.get(f"{_API_BASE}/messages/m1").mock(return_value=httpx.Response(200, json={
+        "threadId": "t1", "snippet": "ciao", "labelIds": ["INBOX", "UNREAD"],
+        "payload": {"headers": [
+            {"name": "From", "value": "marco@x.it"},
+            {"name": "Subject", "value": "Preventivo"},
+            {"name": "Date", "value": "Mon, 28 Jul 2026 10:00:00 +0000"}]},
+    }))
+    respx_mock.get(f"{_API_BASE}/messages/m2").mock(return_value=httpx.Response(200, json={
+        "threadId": "t2", "snippet": "grazie", "labelIds": ["INBOX"],
+        "payload": {"headers": [
+            {"name": "From", "value": "lucia@x.it"}, {"name": "Subject", "value": "Ok"}]},
+    }))
+
+    ris = await gmail_client.cerca_messaggi("token", "from:marco is:unread", max_results=5)
+
+    per_id = {m["message_id"]: m for m in ris}
+    assert per_id["m1"]["mittente"] == "marco@x.it"
+    assert per_id["m1"]["oggetto"] == "Preventivo"
+    assert per_id["m1"]["thread_id"] == "t1"
+    assert per_id["m1"]["non_letta"] is True
+    assert per_id["m2"]["non_letta"] is False
+    lista = next(c for c in respx_mock.calls if c.request.url.path.endswith("/messages"))
+    assert lista.request.url.params["q"] == "from:marco is:unread"
+    assert lista.request.url.params["maxResults"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_cerca_messaggi_zero_risultati_lista_vuota(respx_mock):
+    respx_mock.get(f"{_API_BASE}/messages").mock(return_value=httpx.Response(200, json={}))
+    assert await gmail_client.cerca_messaggi("token", "from:nessuno") == []
+
+
+@pytest.mark.asyncio
+async def test_ottieni_thread_tutti_i_messaggi_in_ordine_col_corpo(respx_mock):
+    import base64 as b64
+    c1 = b64.urlsafe_b64encode(b"primo").decode().rstrip("=")
+    c2 = b64.urlsafe_b64encode(b"secondo").decode().rstrip("=")
+    respx_mock.get(f"{_API_BASE}/threads/t1").mock(return_value=httpx.Response(200, json={
+        "messages": [
+            {"id": "m1", "payload": {"mimeType": "text/plain", "body": {"data": c1},
+             "headers": [{"name": "From", "value": "a@x.it"}, {"name": "Subject", "value": "Ciao"}]}},
+            {"id": "m2", "payload": {"mimeType": "text/plain", "body": {"data": c2},
+             "headers": [{"name": "From", "value": "b@x.it"}, {"name": "Subject", "value": "Re: Ciao"}]}},
+        ]
+    }))
+
+    thread = await gmail_client.ottieni_thread("token", "t1")
+
+    assert thread["thread_id"] == "t1"
+    assert [m["message_id"] for m in thread["messaggi"]] == ["m1", "m2"]
+    assert thread["messaggi"][0]["corpo"] == "primo"
+    assert thread["messaggi"][1]["mittente"] == "b@x.it"

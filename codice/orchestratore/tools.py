@@ -453,6 +453,70 @@ async def _list_attachments(tenant_id: str, message_id: str) -> str:
     return "Allegati:\n" + "\n".join(righe)
 
 
+async def _search_email(tenant_id: str, query: str, max_results: int = 10) -> str:
+    """Ricerca nella casella Gmail LIVE (non la memoria curata). Errore Gmail
+    riportato esplicito nel testo, mai finto come 'nessun risultato' — stessa
+    trappola già vista su search_events (2026-07-15)."""
+    if rifiuto := await _autorizza(tenant_id, "search_email", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    # Tetto per non ingolfare il contesto del modello con centinaia di mail. Per
+    # elenchi grandi conviene una query più mirata (mittente/periodo). Un lavoro
+    # "bulk" reale (pulizia di massa) vorrà paginazione — arretrato, vedi ROADMAP.
+    max_results = min(max(int(max_results), 1), 50)
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        messaggi = await gmail_client.cerca_messaggi(access_token, query, max_results=max_results)
+    except gmail_client.GmailError as exc:
+        return f"Errore nella ricerca in Gmail, riprova o segnalalo: {exc}"
+    if not messaggi:
+        return "Nessuna email trovata per questa ricerca."
+    righe = []
+    for m in messaggi:
+        stato = " [non letta]" if m["non_letta"] else ""
+        righe.append(
+            f"- [message_id {m['message_id']}, thread_id {m['thread_id']}]{stato} "
+            f"da {m['mittente']} — {m['oggetto']} ({m['data']})\n  {m['anteprima']}"
+        )
+    return "Email trovate:\n" + "\n".join(righe)
+
+
+async def _read_email(tenant_id: str, message_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "read_email", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        m = await gmail_client.ottieni_messaggio(access_token, message_id)
+    except gmail_client.GmailError as exc:
+        return f"Errore nel leggere l'email, riprova o segnalalo: {exc}"
+    allegati = ""
+    if m["allegati"]:
+        allegati = "\nAllegati: " + ", ".join(a["filename"] for a in m["allegati"])
+    return (
+        f"[message_id {m['message_id']}, thread_id {m['thread_id']}]\n"
+        f"Da: {m['mittente']}\nA: {m['destinatari']}\nOggetto: {m['oggetto']}\n\n"
+        f"{m['corpo']}{allegati}"
+    )
+
+
+async def _read_thread(tenant_id: str, thread_id: str) -> str:
+    if rifiuto := await _autorizza(tenant_id, "read_thread", supervisor.CATEGORIA_IMMEDIATA):
+        return f"Azione non consentita: {rifiuto['message']}"
+    try:
+        access_token = await gmail_client.ottieni_access_token(tenant_id)
+        thread = await gmail_client.ottieni_thread(access_token, thread_id)
+    except gmail_client.GmailError as exc:
+        return f"Errore nel leggere la conversazione, riprova o segnalalo: {exc}"
+    if not thread["messaggi"]:
+        return "Conversazione vuota o non trovata."
+    righe = [f"Conversazione (thread_id {thread_id}), {len(thread['messaggi'])} messaggi:"]
+    for i, m in enumerate(thread["messaggi"], 1):
+        righe.append(
+            f"\n--- Messaggio {i} [message_id {m['message_id']}] ---\n"
+            f"Da: {m['mittente']} ({m['data']})\nOggetto: {m['oggetto']}\n{m['corpo']}"
+        )
+    return "\n".join(righe)
+
+
 async def _scarica_allegato_con_meta(tenant_id: str, message_id: str, attachment_id: str) -> tuple[bytes, dict]:
     """Scarica un allegato e ne recupera i metadati (filename, mime_type).
 
@@ -892,12 +956,15 @@ def crea_server(tenant_id: str):
     @tool(
         "search_memoria",
         (
-            "Cerca in tutta la memoria (mail importate, eventi calendario "
-            "conclusi, fatti salvati su persone/entità) per argomento, "
-            "ricerca semantica. Usa questo per 'cosa so su X' o domande sul "
-            "passato - per impegni futuri/presenti usa search_events "
-            "(dato più fresco, live su Google Calendar). tipo opzionale per "
-            "restringere: 'gmail', 'calendar_event' o 'fatto'."
+            "Ricerca semantica per argomento su ciò che è già stato IMPORTATO "
+            "in memoria (un sottoinsieme curato: mail importate, eventi "
+            "calendario conclusi, fatti salvati) - NON è la posta in arrivo "
+            "attuale. Usa questo per 'cosa so su X' o domande sul passato. "
+            "Per cercare/leggere email vere nella casella Gmail (anche mai "
+            "importate, es. 'ultime mail', 'la mail di ieri di X') usa "
+            "search_email. Per impegni futuri/presenti usa search_events "
+            "(live su Google Calendar). tipo opzionale per restringere: "
+            "'gmail', 'calendar_event' o 'fatto'."
         ),
         {
             "type": "object",
@@ -910,6 +977,56 @@ def crea_server(tenant_id: str):
     )
     async def search_memoria(args: dict) -> dict:
         return _testo(await _search_memoria(tenant_id, args["query"], tipo=args.get("tipo")))
+
+    @tool(
+        "search_email",
+        (
+            "Cerca nella casella Gmail REALE/LIVE (posta in arrivo attuale), "
+            "anche email mai importate in memoria. `query` usa la sintassi di "
+            "ricerca di Gmail, es: 'from:marco', 'subject:preventivo', "
+            "'is:unread', 'after:2026/07/01 before:2026/07/15', 'has:attachment' "
+            "(combinabili). Ritorna message_id e thread_id da usare con "
+            "read_email/read_thread/reply_email/forward_email/trash_email. "
+            "Per 'cosa so su X' o il passato già archiviato usa invece "
+            "search_memoria."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "sintassi di ricerca Gmail"},
+                "max_results": {"type": "integer", "description": "default 10, max 50"},
+            },
+            "required": ["query"],
+        },
+    )
+    async def search_email(args: dict) -> dict:
+        return _testo(await _search_email(tenant_id, args["query"], max_results=args.get("max_results", 10)))
+
+    @tool(
+        "read_email",
+        (
+            "Legge il contenuto INTERO di un'email dato il message_id (da "
+            "search_email o search_memoria): mittente, destinatari, oggetto, "
+            "corpo, allegati. Per l'intera conversazione (più messaggi) usa "
+            "read_thread."
+        ),
+        {"message_id": str},
+    )
+    async def read_email(args: dict) -> dict:
+        return _testo(await _read_email(tenant_id, args["message_id"]))
+
+    @tool(
+        "read_thread",
+        (
+            "Legge una conversazione email INTERA dato il thread_id (da "
+            "search_email/read_email): tutti i messaggi del thread in ordine. "
+            "Usa questo PRIMA di rispondere a una conversazione con più scambi, "
+            "per avere il contesto completo e non solo l'ultimo messaggio."
+        ),
+        {"thread_id": str},
+    )
+    async def read_thread(args: dict) -> dict:
+        return _testo(await _read_thread(tenant_id, args["thread_id"]))
 
     @tool(
         "remember_fact",
@@ -1193,8 +1310,8 @@ def crea_server(tenant_id: str):
     @tool(
         "list_attachments",
         (
-            "Elenca gli allegati di un messaggio email (message_id, vedi i "
-            "risultati di search_memoria) con il loro attachment_id, nome, "
+            "Elenca gli allegati di un messaggio email (message_id, da "
+            "search_email o search_memoria) con il loro attachment_id, nome, "
             "tipo e dimensione. Usa questo PRIMA di get_attachment o "
             "import_document su un allegato Gmail — non indovinare mai "
             "l'attachment_id."
@@ -1611,7 +1728,8 @@ def crea_server(tenant_id: str):
         name=SERVER_NAME,
         version="1.0.0",
         tools=[
-            search_memoria, remember_fact, propose_commitment, list_impegni_aperti, close_commitment,
+            search_memoria, search_email, read_email, read_thread,
+            remember_fact, propose_commitment, list_impegni_aperti, close_commitment,
             draft_email, send_email, reply_email, forward_email,
             send_draft, trash_email, mark_email, organize_email, list_labels, list_attachments, get_attachment,
             import_document, list_documents, get_document, forget_document,
@@ -1624,6 +1742,9 @@ def crea_server(tenant_id: str):
 
 ALLOWED_TOOLS = [
     f"mcp__{SERVER_NAME}__search_memoria",
+    f"mcp__{SERVER_NAME}__search_email",
+    f"mcp__{SERVER_NAME}__read_email",
+    f"mcp__{SERVER_NAME}__read_thread",
     f"mcp__{SERVER_NAME}__remember_fact",
     f"mcp__{SERVER_NAME}__propose_commitment",
     f"mcp__{SERVER_NAME}__list_impegni_aperti",
