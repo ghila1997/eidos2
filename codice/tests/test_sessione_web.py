@@ -4,7 +4,6 @@ solo testo alla volta, riusando la traduzione turno->eventi condivisa
 fuori posto nel testo - vedi DECISIONS.md 2026-07-28 pt.3)."""
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 from claude_agent_sdk.types import ResultMessage, StreamEvent, ToolResultBlock, UserMessage
