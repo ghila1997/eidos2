@@ -458,6 +458,22 @@ più "dimenticate silenziosamente"
 
 ## Esplicitamente rimandato
 
+- **Rinnovo automatico della sessione Supabase — DIFETTO NOTO, da sistemare** (trovato 2026-07-30,
+  provando le conferme di gruppo): `fondamenta/auth.py::get_sessione_corrente` verifica l'access
+  token e, se scaduto, solleva 401 — **senza mai usare il `sb_refresh_token` che è già nel cookie**.
+  Effetto reale sul founder: dopo circa un'ora la UI smette di ricevere qualunque cosa (il
+  WebSocket viene rifiutato con 403 a ogni riconnessione), l'assistente sembra vivo e non risponde
+  più, e gli esiti delle azioni non arrivano a nessuno. Mitigato ma non risolto: la UI ora dichiara
+  "sessione scaduta, ricarica la pagina" invece di ritentare in silenzio, e un esito non consegnato
+  viene recapitato alla riconnessione (DECISIONS.md 2026-07-31).
+  - **Trappola da tenere presente nel design**: il rinnovo va fatto su una richiesta HTTP, perché
+    sull'handshake di un WebSocket non si possono impostare cookie in modo affidabile. Serve quindi
+    decidere chi rinnova (un endpoint dedicato chiamato dal client prima di riconnettere? un
+    middleware su ogni richiesta HTTP?) e come si comporta la cache delle sessioni, che oggi è
+    indicizzata per access token.
+  - **Dove va**: è materia Fondamenta (auth), non interfaccia. Da riaprire con `saas-architect`
+    perché tocca un modulo dato per finito, prima della Tappa 10 (checklist di lancio): un prodotto
+    vendibile non può buttare fuori l'utente ogni ora senza rinnovare da solo.
 - **Masking dei dati sensibili verso i modelli** (vault + token reversibili): analisi e design
   già fatti, non costruiti — vedi [notes/masking-dati-sensibili.md](notes/masking-dati-sensibili.md).
   Si costruisce **su richiesta di un cliente**, non prima: perimetro per tenant, rilevamento
