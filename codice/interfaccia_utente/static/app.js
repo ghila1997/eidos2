@@ -94,17 +94,44 @@ function programmaSpegnimento(attesa = 2400) {
   timerSettle = setTimeout(() => { convo.classList.add('settled'); timerSettle = null; }, attesa);
 }
 
+// Il log è per fasi, non per chiamata: N chiamate consecutive dello stesso
+// tool sono UNA riga con un contatore che sale ("Preparo il cestinamento · 12"
+// → "· 30"). Trenta righe identiche non sono informazione, sono una cascata:
+// il numero di righe deve restare leggibile qualunque cosa faccia l'assistente.
+function scriviRigaStep(row) {
+  const n = Number(row.dataset.quante || 1);
+  const conta = n > 1 ? ` · ${n}` : '';
+  const avanzamento = row.dataset.avanzamento ? ` · ${row.dataset.avanzamento}` : '';
+  const tick = row.classList.contains('errore') ? '✗'
+    : row.classList.contains('run') ? '●' : '✓';
+  row.innerHTML = `<span class="tick">${tick}</span>${escapeHTML(row.dataset.etichetta || '')}` +
+    `<span class="conta">${escapeHTML(conta + avanzamento)}</span>`;
+}
+
 function ambientStepInizio(id, etichetta) {
   if (!stepsEl) ambientNuovoTurno('');
+  const nome = etichetta || 'Lavoro…';
+  // Stessa etichetta dell'ultima riga? Non se ne apre una nuova: si conta.
+  const ultima = stepsEl.lastElementChild;
+  if (ultima && ultima.dataset.etichetta === nome) {
+    ultima.dataset.quante = String(Number(ultima.dataset.quante || 1) + 1);
+    ultima.dataset.toolId = id || ultima.dataset.toolId;   // l'ultimo id apre/chiude la riga
+    ultima.classList.remove('done', 'errore');
+    ultima.classList.add('run');
+    scriviRigaStep(ultima);
+    return;
+  }
   const row = document.createElement('div');
   row.className = 'amb-step run';   // "in corso": il pallino pulsa (processo vivo)
   row.dataset.toolId = id || ('t' + Date.now());
+  row.dataset.etichetta = nome;
+  row.dataset.quante = '1';
   // Le righe "Preparo ..." sono azioni soltanto PROPOSTE: restano in sospeso
-  // finché non passano dal gate. Marcandole si possono sostituire con l'esito
-  // vero quando la conferma arriva, invece di lasciare trenta "Preparo il
-  // cestinamento" col ✓ che sembrano trenta cose già fatte.
-  if ((etichetta || '').startsWith('Preparo')) row.dataset.preparata = '1';
-  row.innerHTML = `<span class="tick">●</span>${escapeHTML(etichetta || 'Lavoro…')}`;
+  // finché non passano dal gate. Marcandole, la conferma può trasformarle
+  // nella fase successiva ("Cestino le mail · 4/30") invece di lasciarle lì
+  // col ✓ a sembrare cose già fatte.
+  if (nome.startsWith('Preparo')) row.dataset.preparata = '1';
+  scriviRigaStep(row);
   stepsEl.appendChild(row);
 }
 function ambientStepFine(id, esito) {
@@ -113,7 +140,7 @@ function ambientStepFine(id, esito) {
   const errore = esito === 'errore';
   row.classList.remove('run');
   row.classList.add(errore ? 'errore' : 'done');
-  row.querySelector('.tick').textContent = errore ? '✗' : '✓';
+  scriviRigaStep(row);
 }
 function assicuraSay() {
   if (!sayEl) {
@@ -168,7 +195,8 @@ function passiInlineHTML(passi) {
     const err = p.esito === 'errore';
     const glyph = running ? '●' : (err ? '✗' : '✓');
     const cls = 'passo' + (running ? ' run' : '') + (err ? ' errore' : '');
-    return `<div class="${cls}"><span class="tick">${glyph}</span>${escapeHTML(p.etichetta || '')}</div>`;
+    const conta = p.quante > 1 ? `<span class="conta"> · ${p.quante}</span>` : '';
+    return `<div class="${cls}"><span class="tick">${glyph}</span>${escapeHTML(p.etichetta || '')}${conta}</div>`;
   }).join('');
   return `<div class="passi-inline">${righe}</div>`;
 }
@@ -196,7 +224,13 @@ function rigaStorico(m) {
 // ricostruisce col turno ormai salvato).
 function aggiornaLiveHistory() {
   const esistente = history.querySelector('.live-tail');
-  if (!convo.classList.contains('open') || !turnoInCorso) { if (esistente) esistente.remove(); return; }
+  // Con la cronologia aperta l'ambient è `display: none` (vedi style.css): tutto
+  // quello che ci scriviamo lì diventa invisibile. L'esecuzione di un gruppo di
+  // azioni e il suo esito devono comparire ANCHE qui, altrimenti chi sta
+  // leggendo la cronologia conferma 30 cestinamenti e non vede mai il
+  // risultato — successo davvero, e sembrava che non funzionasse niente.
+  const daMostrare = turnoInCorso || faseAzione;
+  if (!convo.classList.contains('open') || !daMostrare) { if (esistente) esistente.remove(); return; }
   const vuoto = history.querySelector('.history-empty');
   if (vuoto) vuoto.remove();
   let tail = esistente;
@@ -205,7 +239,9 @@ function aggiornaLiveHistory() {
     ? `<div class="turn user"><span class="who">Tu</span><div class="msg">${escapeHTML(turnoUtenteCorrente)}</div></div>` : '';
   const testo = rispostaCorrente.trim()
     ? `<div class="msg">${escapeHTML(rispostaCorrente)}</div>` : '<div class="msg ghost">…</div>';
-  tail.innerHTML = u + `<div class="turn assistant"><span class="who">Eidos</span>${testo}${passiInlineHTML(passiCorrenti)}</div>`;
+  const passi = passiCorrenti.slice();
+  if (faseAzione) passi.push(faseAzione);
+  tail.innerHTML = u + `<div class="turn assistant"><span class="who">Eidos</span>${testo}${passiInlineHTML(passi)}</div>`;
   history.scrollTop = history.scrollHeight;
 }
 
@@ -340,47 +376,84 @@ async function risolviConferma(conferma) {
   }
   if (!Object.keys(decisioni).length) { chiudiConferma(); return; }
   const quante = Object.values(decisioni).filter(Boolean).length;
-  const yes = $('cf-yes');
-  yes.disabled = true; $('cf-no').disabled = true;
-  // Un gruppo grande richiede qualche secondo: senza dirlo la scheda sembra
-  // piantata (STOP 2, 2026-07-30 - "sta lì fermo tantissimo come bloccato").
-  // Non c'è un avanzamento reale dal server, quindi si dice cosa sta facendo
-  // senza inventare un "12 su 30" che non abbiamo.
-  if (conferma) {
-    yes.classList.add('in-corso');
-    yes.textContent = quante > 1 ? `Eseguo ${quante} azioni…` : 'Eseguo…';
+
+  // La scheda se ne va e la fase parte SUBITO, prima della chiamata: il server
+  // esegue in background e i suoi eventi possono arrivare prima che questa
+  // funzione riprenda dopo l'await. Creando la riga dopo, un `azione_fine`
+  // veloce trovava la fase non ancora aperta, mostrava l'esito e poi si
+  // apriva una riga "Eseguo… 0/N" che non si chiudeva più, con l'input
+  // bloccato. Aprirla prima toglie la corsa alla radice.
+  chiudiConferma();
+  if (!conferma) {
+    // anche l'annullamento chiude le righe "Preparo ...": restare aperte
+    // suggerirebbe che qualcosa sia ancora in corso.
+    ambientEsito(`Annullato (${Object.keys(decisioni).length} azioni)`, 'errore');
+    programmaSpegnimento(1600);
+  } else {
+    iniziaFaseEsecuzione(quante);
   }
+
   try {
     const r = await fetch('/azioni/conferma-gruppo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decisioni }),
     });
-    if (!r.ok) {
-      chiudiConferma();
-      let msg = 'Non sono riuscito a completare l’azione. Riprova.';
-      try { const b = await r.json(); if (b && b.detail) msg = b.detail; } catch { /* corpo non JSON */ }
-      ambientErrore(msg);
-      return;
-    }
-    const risposta = await r.json();
-    chiudiConferma();
-    if (!conferma) {
-      // anche l'annullamento chiude le righe "Preparo ...": restare aperte
-      // suggerirebbe che qualcosa sia ancora in corso.
-      ambientEsito(`Annullato (${quante || Object.keys(decisioni).length} azioni)`, 'errore');
-      programmaSpegnimento(1600);
-      return;
-    }
-    // esito unico del gruppo: "20 mail spostate nel cestino, 1 esclusa".
-    // Solo conferma dal vivo nel flusso, niente salvataggio in cronologia.
-    ambientEsito(risposta.esito || 'Fatto');
-    programmaSpegnimento();  // stessa attesa di un turno normale, non una corsia a parte
+    if (r.ok) return;   // 202: il resto lo raccontano azione_progresso/azione_fine
+    let msg = 'Non sono riuscito a completare l’azione. Riprova.';
+    try { const b = await r.json(); if (b && b.detail) msg = b.detail; } catch { /* corpo non JSON */ }
+    chiudiFaseEsecuzione(msg, true);
   } catch {
-    // rete assente al momento della conferma: si riprova (scheda resta).
-    $('cf-yes').disabled = false; $('cf-no').disabled = false;
-    ambientErrore('Connessione assente, riprova a confermare.');
+    // La richiesta non è nemmeno partita: niente è stato avviato sul server.
+    chiudiFaseEsecuzione('Connessione assente: non ho avviato niente, riprova.', true);
   }
+}
+
+/* ---- fase di esecuzione: una riga che conta mentre il gruppo va avanti ----
+   Vive in DUE posti perché le due superfici si escludono a vicenda: la riga
+   nell'ambient (chiuso) e `faseAzione` nella cronologia (aperta, dove
+   l'ambient è display:none). Un esito visibile solo in una delle due viste è
+   un esito che metà delle volte non si vede. */
+let rigaEsecuzione = null;
+let faseAzione = null;
+
+function iniziaFaseEsecuzione(totale) {
+  if (!stepsEl) ambientNuovoTurno('');
+  convo.classList.remove('settled');
+  stepsEl.querySelectorAll('[data-preparata]').forEach((r) => r.remove());
+  rigaEsecuzione = document.createElement('div');
+  rigaEsecuzione.className = 'amb-step run';
+  rigaEsecuzione.dataset.etichetta = 'Eseguo le azioni confermate';
+  rigaEsecuzione.dataset.quante = '1';
+  rigaEsecuzione.dataset.avanzamento = `0/${totale}`;
+  scriviRigaStep(rigaEsecuzione);
+  stepsEl.appendChild(rigaEsecuzione);
+  ambientTrim();
+  faseAzione = { etichetta: `Eseguo le azioni confermate · 0/${totale}`, esito: 'ok', fatto: false };
+  aggiornaLiveHistory();
+  abilitaInput(false);   // finché il gruppo gira non si apre un turno nuovo
+}
+
+function aggiornaFaseEsecuzione(fatte, totale) {
+  if (rigaEsecuzione) {
+    rigaEsecuzione.dataset.avanzamento = `${fatte}/${totale}`;
+    scriviRigaStep(rigaEsecuzione);
+  }
+  if (faseAzione) {
+    faseAzione.etichetta = `Eseguo le azioni confermate · ${fatte}/${totale}`;
+    aggiornaLiveHistory();
+  }
+}
+
+function chiudiFaseEsecuzione(esito, errore) {
+  // La riga di avanzamento diventa la riga di esito: una sola riga racconta
+  // tutta la fase, dall'inizio al risultato.
+  if (rigaEsecuzione) { rigaEsecuzione.remove(); rigaEsecuzione = null; }
+  ambientEsito(esito || 'Fatto', errore ? 'errore' : 'done');
+  faseAzione = { etichetta: esito || 'Fatto', esito: errore ? 'errore' : 'ok', fatto: true };
+  aggiornaLiveHistory();
+  abilitaInput(true);
+  programmaSpegnimento();
 }
 
 /* ---- sessione WebSocket: /ws/session ---- */
@@ -394,6 +467,7 @@ let primoDeltaVisto = false;
 let chiusuraVoluta = false;
 let tentativiRiconn = 0;
 let timerRiconn = null;
+let rifiutiConsecutivi = 0;   // handshake rifiutati di fila = sessione scaduta
 
 function urlWS() {
   const schema = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -411,7 +485,8 @@ function connettiWS() {
   if (!navigator.onLine) { setConn('offline'); return; }
   chiusuraVoluta = false;
   ws = new WebSocket(urlWS());
-  ws.addEventListener('open', () => { tentativiRiconn = 0; setConn('online'); });
+  let apertaDavvero = false;
+  ws.addEventListener('open', () => { apertaDavvero = true; tentativiRiconn = 0; setConn('online'); });
   ws.addEventListener('message', (ev) => gestisciEvento(JSON.parse(ev.data)));
   ws.addEventListener('close', () => {
     if (chiusuraVoluta) return;
@@ -420,6 +495,22 @@ function connettiWS() {
       turnoInCorso = false;
       statoEssere('idle');
       ambientErrore('Connessione persa durante la risposta. Riprova.');
+    }
+    // Chiusa senza essersi mai aperta = il server ha rifiutato l'handshake,
+    // quasi sempre perché la sessione è scaduta. Ritentare all'infinito con
+    // la spia su "riconnessione" lascia l'utente davanti a una UI che sembra
+    // viva ma non riceve più niente: nessun esito di azione, nessuna risposta.
+    // Meglio dirlo e fermarsi (STOP 2, 2026-07-30: sessione scaduta = eventi
+    // persi in silenzio).
+    if (!apertaDavvero) {
+      rifiutiConsecutivi += 1;
+      if (rifiutiConsecutivi >= 3) {
+        setConn('offline');
+        ambientErrore('Sessione scaduta: ricarica la pagina per rientrare.');
+        return;   // niente altri tentativi
+      }
+    } else {
+      rifiutiConsecutivi = 0;
     }
     programmaRiconnessione();
   });
@@ -437,7 +528,12 @@ function programmaRiconnessione() {
 addEventListener('online', () => { tentativiRiconn = 0; connettiWS(); });
 addEventListener('offline', () => setConn('offline'));
 
+const IN_LOCALE = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+
 function gestisciEvento(e) {
+  // In locale traccia gli eventi delle azioni: sono rari e sono quelli su cui
+  // serve poter capire "è arrivato al browser o no?" senza indovinare.
+  if (IN_LOCALE && String(e.evento || '').startsWith('azione')) console.debug('[eidos]', e);
   switch (e.evento) {
     case 'storico':
       // record della conversazione dal DB, inviato all'apertura (anche a ogni
@@ -458,10 +554,21 @@ function gestisciEvento(e) {
       aggiornaLiveHistory();
       break;
     case 'tool_in_corso': {
-      const passo = { etichetta: e.etichetta || e.tool || '', esito: 'ok', fatto: false };
-      passiCorrenti.push(passo);
-      passoPerId[e.id] = passo;
-      ambientStepInizio(e.id, passo.etichetta);
+      const etichetta = e.etichetta || e.tool || '';
+      // Stessa aggregazione del flusso dal vivo, anche nei passi salvati in
+      // cronologia: trenta voci identiche resterebbero lì per sempre.
+      const ultimo = passiCorrenti[passiCorrenti.length - 1];
+      if (ultimo && ultimo.etichetta === etichetta) {
+        ultimo.quante = (ultimo.quante || 1) + 1;
+        ultimo.fatto = false;
+        passoPerId[e.id] = ultimo;
+      } else {
+        // niente `quante` finché è 1: una chiamata singola resta come prima
+        const passo = { etichetta, esito: 'ok', fatto: false };
+        passiCorrenti.push(passo);
+        passoPerId[e.id] = passo;
+      }
+      ambientStepInizio(e.id, etichetta);
       aggiornaLiveHistory();
       break;
     }
@@ -496,6 +603,18 @@ function gestisciEvento(e) {
         programmaSpegnimento();
       }
       break;
+    // Avanzamento di un gruppo di azioni confermate: NON nasce da un messaggio
+    // dell'utente, arriva mentre il server esegue (la POST di conferma ha già
+    // risposto 202 e la scheda è sparita).
+    case 'azione_progresso':
+      aggiornaFaseEsecuzione(e.fatte, e.totale);
+      break;
+    case 'azione_fine':
+      // `differito`: l'esito era rimasto senza nessuno a cui consegnarlo (socket
+      // caduto, sessione scaduta) e arriva ora, all'apertura del canale. Va
+      // detto che è roba di prima, non una cosa appena successa.
+      chiudiFaseEsecuzione(e.differito ? `${e.esito} (mentre eri disconnesso)` : e.esito, e.errore);
+      break;
     case 'errore':
       turnoInCorso = false;
       abilitaInput(true);
@@ -513,6 +632,7 @@ function inviaMessaggio(testo) {
   passiCorrenti = [];
   passoPerId = {};
   primoDeltaVisto = false;
+  faseAzione = null;   // l'esito del gruppo precedente appartiene al turno prima
   // NON richiudo la cronologia se è aperta: scrivere è una continuazione, non
   // un motivo per chiudere. Il turno si mostra dal vivo sia in ambient (chiuso)
   // sia in coda alla cronologia (aperto).

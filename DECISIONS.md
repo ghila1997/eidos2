@@ -1718,3 +1718,79 @@ cambia quante connessioni si aprono, non quanto si aspetta una risposta.
 **Perché non era già così**: `common/supabase_rest.py` documentava già il problema (e citava "~0,7 s
 misurati su Google Calendar") ma l'aveva risolto solo per Supabase; i client Google erano rimasti
 indietro. Effetto collaterale: la suite di test è passata da ~110 s a ~43 s.
+
+---
+
+## 2026-07-31 — Il log racconta le fasi, e la conferma non blocca
+
+**Contesto**: con la conferma di gruppo funzionante, il founder ha trovato tre cose provandola su
+30-39 mail vere: trenta righe identiche `✓ Cestino la mail` nel log (che per di più leggevano come
+"già fatto" mentre l'azione era solo *proposta*), la scheda ferma per ~12 s al clic su procedi
+("sta lì fermo tantissimo come bloccato"), e **nessuna riga che dicesse cosa era stato cestinato
+davvero**.
+
+**Decisione**:
+- **Una riga per fase, non per chiamata.** Chiamate consecutive dello stesso tool collassano in una
+  riga con contatore (`Preparo il cestinamento · 30`), sia nel flusso dal vivo sia nei passi salvati
+  in cronologia. Trenta righe identiche non sono un resoconto, sono una cascata; il numero di righe
+  deve restare leggibile qualunque cosa faccia l'assistente.
+- **Tutte le scritture gated stanno al gerundio** (`trash_email` era l'unica rimasta al presente):
+  col ✓ accanto, "Cestino la mail" racconta una cosa che non è ancora avvenuta.
+- **La conferma risponde `202` e la scheda sparisce subito**; il gruppo prosegue in background e
+  l'avanzamento arriva sul WebSocket di sessione già aperto (`azione_progresso`/`azione_fine`), con
+  un conteggio reale (`4/30`). In background e non tenendo aperta la risposta: se il browser si
+  disconnette a metà, una risposta in streaming farebbe cancellare l'handler lasciando metà mail
+  cestinate e metà no — su azioni distruttive non è accettabile.
+- **`orchestratore/canali.py`**: elenco per tenant dei canali aperti verso l'utente, per mandare
+  eventi che non nascono da un messaggio del client. Sta nell'orchestratore e non
+  nell'interfaccia web di proposito — è **agnostico al canale**, così la sessione vocale potrà
+  registrarsi sullo stesso elenco e *pronunciare* l'esito (Tappa 7.5).
+
+**Verifica**: 393 test verdi, incluso un end-to-end che apre davvero il WebSocket e conferma
+(`test_conferma_gruppo_ws.py`); provato dal founder su mail reali.
+
+---
+
+## 2026-07-31 — L'esito di un'azione non si può perdere
+
+**Contesto**: l'esito viaggiava "spara e dimentica" — se il socket non c'era in quell'istante,
+il risultato di un'azione **già avvenuta** finiva nel nulla. Presentato inizialmente come costo
+accettabile ("succede solo se chiudi la scheda"): sbagliato. Il founder non ha visto l'esito per
+diversi giri di prova, e i log hanno mostrato `esito azione consegnato a 0/0 canali aperti` —
+sessione Supabase scaduta, WebSocket rifiutato con 403 a ogni riconnessione, browser che ritentava
+in silenzio per sempre.
+
+**Decisione**:
+- **Recapito differito**: un esito che non trova nessun canale aperto viene messo da parte e
+  consegnato al primo che si apre, marcato `differito` (la UI dice "mentre eri disconnesso" invece
+  di farlo sembrare appena successo). Scade dopo un'ora: oltre non è una notizia, è cronaca. In
+  memoria, non su Supabase: è un recapito mancato, non un archivio (la verità resta in
+  Gmail/Calendar, vedi 2026-07-29). Solo per `azione_fine`: un avanzamento perso è irrilevante.
+- **La sessione scaduta si dichiara**: dopo tre handshake rifiutati di fila la UI si ferma e scrive
+  "Sessione scaduta: ricarica la pagina", invece di ritentare all'infinito con la spia su
+  "riconnessione" davanti a un'interfaccia che sembra viva e non riceve più niente.
+
+---
+
+## 2026-07-31 — L'esito va scritto in ENTRAMBE le superfici
+
+**Contesto**: dopo aver sistemato tutto il resto l'esito continuava a non comparire. Guidando il
+browser con Playwright e misurando la riga: testo corretto, `opacity: 0`, altezza 0. La causa era
+una riga di CSS della Tappa 7.3, `#convo.open #ambient { display: none; }` — **con la cronologia
+espansa la superficie ambient è nascosta**, e cliccare sul testo del log è proprio il gesto che la
+espande. L'esito veniva scritto in un elemento invisibile; nella cronologia non poteva comparire
+perché lì ci sono solo i turni salvati, e gli esiti non si salvano (2026-07-29).
+
+**Decisione**: la fase di esecuzione e il suo esito vivono in **entrambe** le viste — riga
+nell'ambient (cronologia chiusa) e voce in coda alla conversazione (cronologia aperta). Le due
+superfici si escludono a vicenda per disegno: qualunque cosa importante scritta in una sola è
+invisibile metà delle volte.
+
+**Metodo, che vale oltre questo caso**: la diagnosi è arrivata quando ho smesso di chiedere al
+founder cosa vedeva e ho **guidato io il browser** misurando la riga. Playwright era disponibile
+dall'inizio; usarlo tre giri prima avrebbe risparmiato tutto il resto. Per difetti "non lo vedo a
+schermo" la sonda sul browser vero viene **prima** delle ipotesi.
+
+**Nota collaterale**: uvicorn configura solo i propri logger, quindi ogni `logger.info` del progetto
+finiva nel nulla e la diagnostica veniva cercata in un canale muto. `app.py` ora chiama
+`logging.basicConfig` (livello da `LOG_LEVEL`).

@@ -813,3 +813,70 @@ async def test_conferma_gruppo_esegue_in_parallelo_limitato(respx_mock, monkeypa
     assert risultato["esito"] == "30 mail spostate nel cestino"
     # l'ordine resta quello in cui l'utente ha visto le voci nella scheda
     assert [e["id"] for e in risultato["esiti"]] == [f"az-{i}" for i in range(30)]
+
+
+@pytest.mark.asyncio
+async def test_conferma_gruppo_riferisce_l_avanzamento(respx_mock, monkeypatch):
+    """La scheda sparisce al clic e l'avanzamento si guarda nel log: serve un
+    conteggio reale, non un'animazione. L'ultimo riferito è sempre totale/totale."""
+    righe = [_riga_trash(i) for i in range(6)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        return None
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    visti = []
+
+    async def avanzamento(fatte, totale):
+        visti.append((fatte, totale))
+
+    await azioni.conferma_gruppo(
+        TENANT_A, {f"az-{i}": True for i in range(6)}, avanzamento=avanzamento
+    )
+
+    assert len(visti) == 6
+    assert visti[-1] == (6, 6)
+    assert [f for f, _ in visti] == sorted(f for f, _ in visti)  # monotono, mai all'indietro
+
+
+@pytest.mark.asyncio
+async def test_avanzamento_rotto_non_ferma_le_azioni(respx_mock, monkeypatch):
+    """Trappola: se la scheda del browser è stata chiusa, riferire l'avanzamento
+    fallisce - le azioni devono comunque andare fino in fondo."""
+    righe = [_riga_trash(i) for i in range(3)]
+    respx_mock.get(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        side_effect=[httpx.Response(200, json=[r]) for r in righe]
+    )
+    respx_mock.patch(f"{SUPABASE_URL}/rest/v1/azioni_pending").mock(
+        return_value=httpx.Response(200, json=[]))
+
+    cestinate = []
+
+    async def fake_token(tenant_id):
+        return "fake-token"
+
+    async def fake_cestina(access_token, message_id):
+        cestinate.append(message_id)
+
+    monkeypatch.setattr(gmail_client, "ottieni_access_token", fake_token)
+    monkeypatch.setattr(gmail_client, "cestina_messaggio", fake_cestina)
+
+    async def avanzamento_rotto(fatte, totale):
+        raise RuntimeError("socket chiuso")
+
+    risultato = await azioni.conferma_gruppo(
+        TENANT_A, {f"az-{i}": True for i in range(3)}, avanzamento=avanzamento_rotto
+    )
+
+    assert cestinate == ["m0", "m1", "m2"]
+    assert risultato["esito"] == "3 mail spostate nel cestino"

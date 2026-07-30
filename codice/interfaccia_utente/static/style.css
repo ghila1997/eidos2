@@ -179,6 +179,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .amb-step.run .tick { animation: pulseDot 1s ease-in-out infinite; }
 .amb-step.done .tick { color: #7fe8b0; }
 .amb-step.errore, .amb-step.errore .tick { color: var(--danger); }
+/* il contatore di una fase ("· 30", "· 4/30"): stessa riga, peso minore -
+   è un dettaglio dell'azione, non un'informazione a sé. */
+.amb-step .conta, .passo .conta { color: var(--muted); font-variant-numeric: tabular-nums; }
 .amb-say {
   font-family: 'Space Mono', ui-monospace, monospace; font-size: 14px; line-height: 1.55;
   letter-spacing: 0.01em; color: var(--text); margin-top: 2px; white-space: pre-wrap; word-break: break-word;

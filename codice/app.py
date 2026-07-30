@@ -13,8 +13,19 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import asyncio  # noqa: E402
+import logging  # noqa: E402
 import os  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
+
+# uvicorn configura solo i PROPRI logger (uvicorn.error/access): quelli dei
+# nostri moduli propagano a un root senza handler, quindi ogni logger.info del
+# progetto finiva nel nulla e restavano visibili solo warning ed errori (via
+# lastResort di logging). Trovato cercando perche' una riga di diagnostica non
+# compariva pur essendo eseguita - il canale era muto, non il codice.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(levelname)s:     %(name)s - %(message)s",
+)
 
 from fondamenta.auth import router as auth_router  # noqa: E402
 from interfaccia_utente import router as interfaccia_utente  # noqa: E402

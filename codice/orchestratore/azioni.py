@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from common.supabase_rest import client as _supabase_client
 from common.supabase_rest import rest_headers, supabase_settings
@@ -215,7 +215,10 @@ async def conferma_azione(
 
 
 async def conferma_gruppo(
-    tenant_id: str, decisioni: dict[str, bool]
+    tenant_id: str,
+    decisioni: dict[str, bool],
+    *,
+    avanzamento: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Risolve in un colpo solo le azioni di un gruppo (`{azione_id: sì/no}`).
 
@@ -241,21 +244,37 @@ async def conferma_gruppo(
     richieste insieme su Gmail.
     """
     semaforo = asyncio.Semaphore(_PARALLELE_PER_GRUPPO)
+    totale = len(decisioni)
+    fatte = 0
+
+    async def _riferisci() -> None:
+        """L'avanzamento è un di più: se il canale è morto (scheda chiusa) le
+        azioni devono comunque andare fino in fondo."""
+        if avanzamento is None:
+            return
+        try:
+            await avanzamento(fatte, totale)
+        except Exception:
+            logger.debug("avanzamento non recapitato", exc_info=True)
 
     async def _risolvi(azione_id: str, conferma: bool) -> dict[str, Any]:
+        nonlocal fatte
         async with semaforo:
             try:
                 risultato = await conferma_azione(tenant_id, azione_id, conferma)
-                return {"id": azione_id, **risultato}
+                esito = {"id": azione_id, **risultato}
             except AzioneNonTrovata:
-                return {"id": azione_id, "stato": "non_trovata"}
+                esito = {"id": azione_id, "stato": "non_trovata"}
             except AzioneGiaRisolta:
-                return {"id": azione_id, "stato": "gia_risolta"}
+                esito = {"id": azione_id, "stato": "gia_risolta"}
             except Exception as exc:
                 # `conferma_azione` l'ha già marcata in errore: qui si annota e
                 # si continua col resto del gruppo.
                 logger.exception("azione %s del gruppo fallita", azione_id)
-                return {"id": azione_id, "stato": STATO_ERRORE, "errore": str(exc)}
+                esito = {"id": azione_id, "stato": STATO_ERRORE, "errore": str(exc)}
+            fatte += 1
+            await _riferisci()
+            return esito
 
     # gather tiene l'ordine delle decisioni: l'esito resta leggibile nell'ordine
     # in cui l'utente ha visto le voci nella scheda.

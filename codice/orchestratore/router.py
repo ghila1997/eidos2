@@ -10,6 +10,7 @@ WebSocket persistente (vedi turno_vocale.py).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from claude_agent_sdk import ResultMessage
@@ -19,12 +20,19 @@ from pydantic import BaseModel
 
 from fondamenta.auth import get_sessione_corrente
 
-from . import agente, azioni, import_calendar, import_mail, oauth, oauth_calendar, oauth_drive, streaming, turno_vocale, voce_token
+from . import (
+    agente, azioni, canali, import_calendar, import_mail, oauth, oauth_calendar,
+    oauth_drive, streaming, turno_vocale, voce_token,
+)
 from .descrizioni_azioni import descrivi_gruppo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Gruppi di azioni in esecuzione: vedi la nota in `conferma_gruppo` sul perché
+# serve un riferimento forte al task.
+_gruppi_in_corso: set[asyncio.Task] = set()
 
 
 class ChatRequest(BaseModel):
@@ -157,23 +165,63 @@ async def conferma(azione_id: str, body: ConfermaRequest, request: Request):
         )
 
 
-@router.post("/azioni/conferma-gruppo")
-async def conferma_gruppo(body: ConfermaGruppoRequest, request: Request):
-    """Risolve in un colpo le N azioni di una scheda. A differenza della
-    conferma singola non solleva 404/409 se una voce non è più valida: con 21
-    azioni è normale che una sia già stata risolta altrove, e non deve
-    impedire le altre 20 - l'esito per voce sta in `esiti`."""
-    sessione = await get_sessione_corrente(request)
-    if not body.decisioni:
-        raise HTTPException(status_code=400, detail="nessuna decisione da applicare")
-    tenant_id = sessione["tenant_id"]
-    risultato = await azioni.conferma_gruppo(tenant_id, body.decisioni)
-    # Il modello deve sapere che è successo: senza questa nota, al turno dopo
+async def _esegui_gruppo(tenant_id: str, decisioni: dict[str, bool]) -> None:
+    """Esegue il gruppo e racconta come va sulla sessione web aperta.
+
+    Gira staccato dalla richiesta HTTP di proposito: la scheda di conferma
+    sparisce al clic e l'avanzamento si vede nel log, ma se l'utente chiude la
+    scheda del browser a metà il lavoro **finisce comunque**. Tenendo aperta la
+    risposta, una disconnessione cancellerebbe l'handler lasciando metà mail
+    cestinate e metà no - su azioni distruttive non è accettabile.
+    """
+    async def avanzamento(fatte: int, totale: int) -> None:
+        await canali.annuncia(
+            tenant_id, {"evento": "azione_progresso", "fatte": fatte, "totale": totale}
+        )
+
+    try:
+        risultato = await azioni.conferma_gruppo(tenant_id, decisioni, avanzamento=avanzamento)
+    except Exception:
+        logger.exception("esecuzione del gruppo di azioni fallita per %s", tenant_id)
+        await canali.annuncia(tenant_id, {
+            "evento": "azione_fine",
+            "esito": "Non sono riuscito a completare le azioni. Controlla e riprova.",
+            "errore": True,
+        })
+        return
+
+    # Il modello deve sapere cos'è successo: senza questa nota, al turno dopo
     # risponde "non ancora" a cose già fatte e le ripropone (vedi agente.py,
     # `_esiti_da_riferire`).
     if any(e.get("stato") == azioni.STATO_INVIATA for e in risultato["esiti"]):
         agente.annota_esito(tenant_id, risultato["esito"])
-    return risultato
+    await canali.annuncia(
+        tenant_id, {"evento": "azione_fine", "esito": risultato["esito"], "errore": False}
+    )
+
+
+@router.post("/azioni/conferma-gruppo", status_code=202)
+async def conferma_gruppo(body: ConfermaGruppoRequest, request: Request):
+    """Avvia la risoluzione delle N azioni di una scheda e **risponde subito**:
+    la scheda sparisce al clic, l'avanzamento arriva sul WebSocket di sessione
+    (`azione_progresso` / `azione_fine`). Un gruppo da 30 richiede secondi, e
+    tenere la scheda ferma nel frattempo la faceva sembrare bloccata.
+
+    A differenza della conferma singola non c'è 404/409 per voce: con 30 azioni
+    è normale che una sia già stata risolta altrove, e non deve impedire le
+    altre 29 - l'esito per voce finisce in `esiti`, riassunto in `azione_fine`.
+    """
+    sessione = await get_sessione_corrente(request)
+    if not body.decisioni:
+        raise HTTPException(status_code=400, detail="nessuna decisione da applicare")
+    tenant_id = sessione["tenant_id"]
+    task = asyncio.create_task(_esegui_gruppo(tenant_id, body.decisioni))
+    # Riferimento forte: senza, il garbage collector può raccogliere il task a
+    # metà esecuzione (asyncio tiene solo weakref) e le azioni resterebbero a
+    # metà - proprio quello che questo endpoint deve evitare.
+    _gruppi_in_corso.add(task)
+    task.add_done_callback(_gruppi_in_corso.discard)
+    return {"avviate": len(body.decisioni)}
 
 
 @router.get("/oauth/google/authorize")

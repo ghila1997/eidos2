@@ -281,8 +281,14 @@ resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
 - **Finito quando**: una richiesta che prepara N azioni chiede una conferma sola, la scheda mostra
   mittente/oggetto e non gli id, e alla domanda "l'hai fatto?" l'assistente sa rispondere — ✅
   verificato dal founder su 11 e 30 mail reali (controllate su Gmail, non sul DB).
-- **Aperto**: il log delle fasi durante l'esecuzione di un gruppo (righe aggregate col contatore,
-  conferma non bloccante con avanzamento reale sul WebSocket) — in corso, stessa sessione.
+- Il log racconta le **fasi** e non le chiamate: righe uguali collassano con un contatore
+  (`Preparo il cestinamento · 30`), la conferma risponde `202` e la scheda sparisce subito,
+  l'avanzamento reale (`4/30`) arriva sul WebSocket già aperto e diventa la riga di esito. Un esito
+  che non trova canali aperti viene recapitato alla prima sessione che si apre invece di perdersi.
+  Vedi DECISIONS.md 2026-07-31 (tre voci).
+- **Finito quando**: chi conferma 30 cestinamenti vede una riga sola che avanza e poi il risultato,
+  qualunque vista abbia aperto — ✅ verificato dal founder su mail reali, e col browser guidato
+  (Playwright) per il caso "cronologia aperta" che era invisibile.
 
 **Tappa 7.4 — Schede grafiche (`data_presented`)**
 - Renderer client completo (lista/tabella/evento/luogo/grafico/scheda), trascinabili e chiudibili;
@@ -296,7 +302,18 @@ resta eseguibile end-to-end — la regola anti-v1: mai strati orizzontali).
   Tappa 6 ma dentro il browser (token effimeri già esistenti, `/voice/token`); modalità
   Normale/Silenziosa/Spenta; barge-in (interrompere l'assistente parlando). La voce da CLI resta
   funzionante nel frattempo.
-- **Finito quando**: una conversazione vocale completa avviene dal browser, senza CLI.
+- **L'esito di un'azione va DETTO, non solo mostrato** (emerso 2026-07-30): oggi dopo una conferma
+  l'esito compare nel log della UI e rientra nel contesto del modello al turno dopo
+  (`agente.annota_esito`), ma **nessuno lo pronuncia** — a voce, dove non c'è uno schermo da
+  guardare, l'utente resta senza sapere se è successo. La cucitura c'è già ed è agnostica al
+  canale (`orchestratore/canali.py`, evento `azione_fine`): la sessione vocale si registra sullo
+  stesso elenco e legge l'esito. Da fare qui, non prima: prima serve la voce nel browser che lo
+  pronunci.
+- Il transcript di una conferma passa già per l'elenco chiuso e deterministico di
+  `voce/conferme.py` (mai interpretazione del modello, mai default a sì) — a voce si conferma il
+  gruppo intero, escludere singole voci resta solo dalla UI.
+- **Finito quando**: una conversazione vocale completa avviene dal browser, senza CLI, **e quando
+  un'azione viene eseguita l'assistente lo dice ad alta voce**.
 
 **Tappa 7.6 — Rifiniture prodotto**
 - Rendering markdown delle risposte; **PWA** installabile (manifest + service worker); empty/error
@@ -441,6 +458,11 @@ più "dimenticate silenziosamente"
 
 ## Esplicitamente rimandato
 
+- **Masking dei dati sensibili verso i modelli** (vault + token reversibili): analisi e design
+  già fatti, non costruiti — vedi [notes/masking-dati-sensibili.md](notes/masking-dati-sensibili.md).
+  Si costruisce **su richiesta di un cliente**, non prima: perimetro per tenant, rilevamento
+  deterministico di IBAN/carte/credenziali, DPA e residenza EU proteggono di più a costo molto
+  minore. Non copre per costruzione documenti fotografati, canale voce e provider di embedding.
 - **Ricerca/sfoglio della inbox Gmail live** — ✅ fatto (2026-07-29): `search_email`/`read_email`/
   `read_thread` (vedi DECISIONS.md). Resta aperto il caso **bulk/pulizia di massa**: `search_email`
   cappa a 50 risultati per non ingolfare il contesto; un lavoro reale su centinaia di mail (pulizia,

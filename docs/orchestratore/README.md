@@ -256,6 +256,12 @@ impegni) — vedi [docs/eval.md](../eval.md).
 - **Il payload di un'azione porta anche l'etichetta leggibile** (mittente/oggetto di una mail,
   nome del file, titolo dell'evento), presa dal client API e mai dal modello: una scheda che
   dice solo "cestino il messaggio 19fb2ffd5cc149c7" non è confermabile da un umano
+- **La conferma di gruppo risponde `202` e prosegue in background** (`/azioni/conferma-gruppo`):
+  l'avanzamento e l'esito arrivano sul WebSocket di sessione via `orchestratore/canali.py`
+  (`azione_progresso`/`azione_fine`). `canali` sta qui e non nell'interfaccia perché è **agnostico
+  al canale** — la voce si registrerà sullo stesso elenco per *pronunciare* l'esito (Tappa 7.5).
+  Un esito che non trova canali aperti non si perde: viene recapitato al primo che si apre
+  (`differito`, scade dopo un'ora)
 - **Dopo la conferma il modello è cieco** (il gate sta fuori dal suo turno e non gli risponde):
   senza aiuto rispondeva "non ancora" ad azioni già eseguite e le riproponeva — doppio invio
   reale su `send_email`. Il turno successivo riceve `[eseguito dopo la tua conferma: ...]`

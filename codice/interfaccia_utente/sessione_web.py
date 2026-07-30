@@ -11,10 +11,11 @@ vivo per il turno dopo. La traduzione turno->eventi e' condivisa con la voce
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from orchestratore import agente, azioni, conversazione, streaming
+from orchestratore import agente, azioni, canali, conversazione, streaming
 from orchestratore.descrizioni_azioni import descrivi_gruppo
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,8 @@ class ConnessioneChiusa(Exception):
     questa, cosi' il ciclo resta testabile senza un vero WebSocket."""
 
 
+
+
 async def gestisci_sessione(
     tenant_id: str,
     ricevi: Callable[[], Awaitable[dict]],
@@ -33,8 +36,48 @@ async def gestisci_sessione(
 ) -> None:
     """Legge messaggi `{"tipo": "messaggio", "testo": ...}` dal client e per
     ognuno esegue un turno di testo, inoltrando delta/tool_in_corso/fine (o
-    un evento errore). Ritorna quando il client chiude la connessione."""
+    un evento errore). Ritorna quando il client chiude la connessione.
+
+    Il canale resta registrato per tutta la durata (vedi `annuncia`): serve a
+    ricevere anche gli eventi che non nascono da un messaggio del client,
+    come l'avanzamento di un gruppo di azioni confermate."""
     motore = await agente.motore_per(tenant_id)
+    # Un lock per canale: durante l'esecuzione di un gruppo due scrittori
+    # (questo ciclo e `annuncia`) possono voler scrivere insieme sullo stesso
+    # WebSocket, e due send_json interlacciati corrompono il frame.
+    #
+    # `invia_grezzo` tiene la funzione originale sotto un nome DIVERSO: la
+    # closure cattura la variabile, non il valore - riassegnando `invia` a
+    # questo wrapper, dentro si richiamerebbe da solo e resterebbe fermo sul
+    # proprio lock, che non e' rientrante. Ogni sessione web bloccata per
+    # sempre; preso dai test, mai arrivato al browser.
+    lock_invio = asyncio.Lock()
+    invia_grezzo = invia
+
+    async def invia_serializzato(evento: dict) -> None:
+        async with lock_invio:
+            await invia_grezzo(evento)
+
+    canali.registra(tenant_id, invia_serializzato)
+    try:
+        await _cicla_sessione(tenant_id, motore, ricevi, invia_serializzato)
+        logger.info("sessione web chiusa dal client (tenant %s)", tenant_id)
+    except Exception:
+        # Perche' una sessione muore non era visibile da nessuna parte, e una
+        # sessione morta significa niente esiti, niente risposte: sembra tutto
+        # vivo e non arriva piu' niente.
+        logger.exception("sessione web terminata da un errore (tenant %s)", tenant_id)
+        raise
+    finally:
+        canali.deregistra(tenant_id, invia_serializzato)
+
+
+async def _cicla_sessione(
+    tenant_id: str,
+    motore,
+    ricevi: Callable[[], Awaitable[dict]],
+    invia: Callable[[dict], Awaitable[None]],
+) -> None:
 
     # Cronologia all'apertura (Tappa 7.3): il record della conversazione
     # sopravvive al refresh. Primo evento del canale, prima di leggere qualunque
@@ -88,9 +131,19 @@ async def gestisci_sessione(
                     # Le "cose fatte in mezzo" al turno: si raccolgono in ordine
                     # e si salvano col messaggio assistente (mostrate a richiesta
                     # nella cronologia, viste dal vivo nella superficie ambient).
-                    passo = {"etichetta": evento.get("etichetta") or evento.get("tool") or "", "esito": "ok"}
-                    passi.append(passo)
-                    passo_per_id[evento.get("id")] = passo
+                    # Chiamate uguali di fila diventano UNA voce col contatore:
+                    # 30 "Preparo il cestinamento" identici in cronologia sono
+                    # una cascata, non un resoconto.
+                    # `quante` compare solo da 2 in su: una chiamata singola -
+                    # il caso normale - resta una voce identica a prima.
+                    etichetta = evento.get("etichetta") or evento.get("tool") or ""
+                    if passi and passi[-1]["etichetta"] == etichetta:
+                        passi[-1]["quante"] = passi[-1].get("quante", 1) + 1
+                        passo_per_id[evento.get("id")] = passi[-1]
+                    else:
+                        passo = {"etichetta": etichetta, "esito": "ok"}
+                        passi.append(passo)
+                        passo_per_id[evento.get("id")] = passo
                 elif tipo == "tool_finito":
                     p = passo_per_id.get(evento.get("id"))
                     if p is not None:
